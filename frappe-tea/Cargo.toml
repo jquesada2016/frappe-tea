@@ -1,7 +1,13 @@
 [package]
 name = "frappe-tea"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
+description = "Framework founded upon Functional Reactivity with the Elm Architecture, VDOM-less, providing unseen performance, reliability, and testability."
+repository = "https://github.com/jquesada2016/frappe-tea"
+authors = ["Jose Quesada <jquesada2016@fau.edu>"]
+keywords = ["frp", "VDOM-less", "elm", "tea", "functional", "reactive", "frontend", "wasm", "framework", "ssr", "wasm"]
+license = "MIT"
+categories = ["gui", "no-std", "wasm", "web-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
