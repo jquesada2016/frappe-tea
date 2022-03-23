@@ -1,52 +1,187 @@
-#![cfg_attr(target_arch = "wasm32", no_std)]
 #![feature(once_cell)]
-
-#[macro_use]
-extern crate alloc;
+#![allow(warnings)]
 
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
 #[allow(unused_imports)]
 extern crate enum_dispatch;
+#[macro_use]
+extern crate typed_builder;
 
 #[macro_use]
 #[allow(unused_macros)]
 mod utils;
-
-use alloc::{
-    boxed::Box,
-    rc::{Rc, Weak},
-    string::{String, ToString},
-    vec::Vec,
-};
-use core::{
-    cell::RefCell,
-    fmt::{Display, Pointer},
-    future::Future,
-    lazy::OnceCell,
-};
+mod bindings;
+mod components;
+pub mod html;
 #[cfg(target_arch = "wasm32")]
 use gloo::utils::document;
+use std::{
+    cell::RefCell,
+    fmt,
+    future::Future,
+    lazy::OnceCell,
+    marker::PhantomData,
+    ops,
+    rc::{Rc, Weak},
+};
 use utils::execute_async;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{prelude::*, JsCast};
 
-#[enum_dispatch]
-trait Node<Msg> {
-    fn children(&self) -> &Vec<DynNode<Msg>>;
+/// This module exposes useful constants regarding the environment of the currently running
+/// app.
+pub mod env {
+    use super::bindings;
+    use std::ops::Deref;
+
+    /// Constant specifying if the app was build in development mode (`debug_assertions`).
+    pub const DEV: bool = cfg!(debug_assertions);
+
+    /// Helper function to determin if the app is currently running
+    /// in the browser.
+    ///
+    /// This value is `false` when SSR is being performed, and code is
+    /// therefore running on the server, beit a wasm target, such as `node.js`
+    /// or `Deno`, or any non-wasm target.
+    pub fn is_browser() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return *bindings::IS_BROWSER.deref();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return false;
+    }
+
+    pub fn is_node() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return *bindings::IS_NODE.deref();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return false;
+    }
+
+    pub fn is_web_worker() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return *bindings::IS_WEB_WORKER.deref();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return false;
+    }
+
+    pub fn is_js_dom() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return *bindings::IS_JS_DOM.deref();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return false;
+    }
+
+    pub fn is_deno() -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return *bindings::IS_DENO.deref();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return false;
+    }
 }
 
-#[enum_dispatch(Node, Display)]
-pub enum DynNode<Msg> {
-    NodeTree(NodeTree<Msg>),
+#[doc(hidden)]
+pub mod __private_internals__ {
+    pub use typed_builder::TypedBuilder;
 }
 
-impl<Msg> Display for DynNode<Msg> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NodeTree(n) => n.fmt(f),
+pub mod prelude {
+    pub use super::{
+        html::{self, Html},
+        *,
+    };
+}
+
+pub type BoxNode<Msg> = Box<dyn Node<Msg>>;
+
+pub trait Node<Msg> {
+    fn node(&self) -> &NodeTree<Msg>;
+
+    fn children(&self) -> &Vec<BoxNode<Msg>>;
+
+    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>>;
+
+    fn append_child(&mut self, child: BoxNode<Msg>) {
+        #[cfg(target_arch = "wasm32")]
+        if env::is_browser() {
+            match self.node() {
+                NodeTree::Component { .. } => { /* Nothing to do here */ }
+                NodeTree::Tag {
+                    node: Some(parent), ..
+                } => match child.node() {
+                    NodeTree::Component {
+                        opening_comment,
+                        closing_comment,
+                        children,
+                        ..
+                    } => {
+                        // First, insert the opening comment node
+                        parent
+                            .append_child(
+                                &opening_comment.node.as_ref().unwrap_throw(),
+                            )
+                            .unwrap_throw();
+
+                        // Next, add all children
+                        children.recursively_append_children_to_dom(parent);
+
+                        // Lastly, insert closing comment node
+                        parent
+                            .append_child(
+                                &closing_comment.node.as_ref().unwrap_throw(),
+                            )
+                            .unwrap_throw();
+                    }
+                    NodeTree::Tag {
+                        node: Some(child), ..
+                    } => {
+                        parent.append_child(child).unwrap_throw();
+                    }
+                    NodeTree::Text {
+                        node: Some(child), ..
+                    } => {
+                        parent.append_child(child).unwrap_throw();
+                    }
+                    _ => unreachable!(),
+                },
+                NodeTree::Text { .. } => {
+                    panic!("text nodes cannot have children")
+                }
+                _ => unreachable!(),
+            }
         }
+
+        self.children_mut().push(child);
+    }
+
+    fn clear_children(&mut self) {
+        self.children_mut().clear();
+    }
+}
+
+impl<Msg> ops::Deref for dyn Node<Msg> {
+    type Target = NodeTree<Msg>;
+
+    fn deref(&self) -> &Self::Target {
+        self.node()
+    }
+}
+
+impl<Msg> fmt::Debug for dyn Node<Msg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.node().fmt(f)
+    }
+}
+
+impl<Msg> fmt::Display for dyn Node<Msg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.node().fmt(f)
     }
 }
 
@@ -54,7 +189,61 @@ pub trait IntoCmd<Msg> {
     fn into_cmd(self: Box<Self>) -> Box<dyn Cmd<Msg>>;
 }
 
-pub trait IntoNode<Msg> {}
+#[cfg(target_arch = "wasm32")]
+trait NodeVecExt {
+    /// Helper function for recursively appending children to a component.
+    ///
+    /// It is intended to recurse it's children until a `tag` or `text` node
+    /// is encountered.
+    fn recursively_append_children_to_dom(&self, target: &web_sys::Node);
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<Msg> NodeVecExt for [BoxNode<Msg>] {
+    fn recursively_append_children_to_dom(&self, target: &web_sys::Node) {
+        for child in self {
+            match child.node() {
+                NodeTree::Tag { node, .. } => {
+                    target
+                        .append_child(node.as_ref().unwrap_throw())
+                        .unwrap_throw();
+                }
+                NodeTree::Text { node, .. } => {
+                    target
+                        .append_child(node.as_ref().unwrap_throw())
+                        .unwrap_throw();
+                }
+                NodeTree::Component {
+                    opening_comment,
+                    children,
+                    closing_comment,
+                    ..
+                } => {
+                    // First, insert opening comment node
+                    target
+                        .append_child(
+                            &opening_comment.node.as_ref().unwrap_throw(),
+                        )
+                        .unwrap_throw();
+
+                    // Add children
+                    children.recursively_append_children_to_dom(target);
+
+                    // Lastly, add closing comment node
+                    target
+                        .append_child(
+                            &closing_comment.node.as_ref().unwrap_throw(),
+                        )
+                        .unwrap_throw();
+                }
+            }
+        }
+    }
+}
+
+pub trait IntoNode<Msg> {
+    fn into_node(self) -> BoxNode<Msg>;
+}
 
 trait DispatchMsg<Msg> {
     fn dispatch_msg(self: Rc<Self>, msg: Msg);
@@ -71,40 +260,48 @@ pub trait Cmd<Msg> {
     async fn execute(self: Box<Self>) -> Option<Msg>;
 }
 
-pub struct Element<M, Msg> {
+#[cfg(target_arch = "wasm32")]
+pub struct Element<M, Msg, UF> {
     model: RefCell<M>,
     #[allow(clippy::type_complexity)]
-    update_fn: fn(&mut M, Msg) -> Option<Box<dyn IntoCmd<Msg>>>,
+    update_fn: UF,
+    root_node: OnceCell<BoxNode<Msg>>,
+    _msg_type: PhantomData<Msg>,
 }
 
-impl<M, Msg> Element<M, Msg>
+#[cfg(target_arch = "wasm32")]
+impl<M, Msg, UF> Element<M, Msg, UF>
 where
     M: 'static,
     Msg: 'static,
+    UF: Fn(&mut M, Msg) -> Option<Box<dyn IntoCmd<Msg>>> + 'static,
 {
     #[allow(clippy::type_complexity)]
-    pub fn new<F, C, Fut, N>(
+    pub async fn new<Fut, const N: usize>(
         target: &str,
-        initial_model: F,
-        update: fn(&mut M, Msg) -> Option<Box<dyn IntoCmd<Msg>>>,
-        view: fn(&M) -> Fut,
+        initial_model: impl FnOnce() -> (M, Option<Box<dyn IntoCmd<Msg>>>),
+        update: UF,
+        view: impl FnOnce(&M) -> Fut,
     ) -> Rc<Self>
     where
-        F: FnOnce() -> (M, Option<Box<C>>),
-        C: IntoCmd<Msg>,
-        Fut: Future<Output = N>,
-        N: IntoNode<Msg>,
+        Fut: Future<Output = [BoxNode<Msg>; N]>,
     {
         let (model, initial_cmd) = initial_model();
 
         let this = Rc::new(Self {
             model: RefCell::new(model),
             update_fn: update,
+            root_node: OnceCell::new(),
+            _msg_type: PhantomData::default(),
         });
 
         let this_weak = Rc::downgrade(&this);
 
-        render(target, view(&this.model.borrow()), this_weak);
+        let children = view(&this.model.borrow()).await;
+
+        let root_node = render(target, children, this_weak);
+
+        this.root_node.set(root_node).unwrap_throw();
 
         if let Some(cmd) = initial_cmd {
             this.clone().perform_cmd(cmd.into_cmd());
@@ -112,22 +309,30 @@ where
 
         this
     }
+
+    pub fn root_node(&self) -> &BoxNode<Msg> {
+        &self.root_node.get().unwrap_throw()
+    }
 }
 
-impl<M, Msg> DispatchMsg<Msg> for Element<M, Msg>
+#[cfg(target_arch = "wasm32")]
+impl<M, Msg, UF> DispatchMsg<Msg> for Element<M, Msg, UF>
 where
     M: 'static,
     Msg: 'static,
+    UF: Fn(&mut M, Msg) -> Option<Box<dyn IntoCmd<Msg>>> + 'static,
 {
     fn dispatch_msg(self: Rc<Self>, msg: Msg) {
         Runtime::dispatch_msg(self, msg);
     }
 }
 
-impl<M, Msg> Runtime<Msg> for Element<M, Msg>
+#[cfg(target_arch = "wasm32")]
+impl<M, Msg, UF> Runtime<Msg> for Element<M, Msg, UF>
 where
     M: 'static,
     Msg: 'static,
+    UF: Fn(&mut M, Msg) -> Option<Box<dyn IntoCmd<Msg>>> + 'static,
 {
     fn dispatch_msg(self: Rc<Self>, msg: Msg) {
         let cmd = (self.update_fn)(&mut self.model.borrow_mut(), msg);
@@ -148,11 +353,43 @@ where
     }
 }
 
-fn render<Msg>(
+#[cfg(target_arch = "wasm32")]
+fn render<Msg, const N: usize>(
     target: &str,
+    children: [BoxNode<Msg>; N],
+    dispatch_msg_weak: Weak<dyn DispatchMsg<Msg>>,
+) -> BoxNode<Msg>
+where
+    Msg: 'static,
+{
+    // First, get the target node
+    let target = document()
+        .query_selector(target)
+        .expect_throw(&format!("failed to query `{target}`"))
+        .expect_throw(&format!(
+            "failed to find target node with query `{target}`"
+        ))
+        .unchecked_into();
+
+    // Intern the node into an element
+    let mut target = NodeTree::<Msg>::from_raw_node(target);
+
+    // Insert children
+    for child in children {
+        target.append_child(child);
+    }
+
+    target.into_node()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render<Msg>(
     children: impl Future<Output = impl IntoNode<Msg>>,
     dispatch_msg_weak: Weak<dyn DispatchMsg<Msg>>,
-) {
+) -> BoxNode<Msg>
+where
+    Msg: 'static,
+{
     todo!()
 }
 
@@ -164,29 +401,65 @@ pub enum NodeTree<Msg> {
         opening_comment: Comment,
         /// Component name
         name: &'static str,
-        children: Vec<DynNode<Msg>>,
+        children: Vec<BoxNode<Msg>>,
         /// Marks the end of a component.
         closing_comment: Comment,
     },
     Tag {
         msg_dispatcher: OnceCell<Weak<dyn DispatchMsg<Msg>>>,
         name: String,
+        /// Optional because we might be running outside the browser.
+        #[cfg(target_arch = "wasm32")]
+        node: Option<web_sys::Node>,
+        children: Vec<BoxNode<Msg>>,
     },
     Text {
         text: String,
         #[cfg(target_arch = "wasm32")]
-        node: web_sys::Text,
+        /// Optional because we might be running outside the browser.
+        node: Option<web_sys::Text>,
     },
 }
 
-impl<Msg> Display for NodeTree<Msg> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<Msg> fmt::Debug for NodeTree<Msg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text { text, .. } => text.fmt(f),
+            Self::Tag { name, children, .. } => f
+                .debug_struct("Tag")
+                .field("name", name)
+                .field("children", children)
+                .finish(),
+            Self::Component { name, children, .. } => f
+                .debug_struct("Component")
+                .field("name", name)
+                .field("children", children)
+                .finish(),
+        }
+    }
+}
+
+impl<Msg> fmt::Display for NodeTree<Msg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Component { name, .. } => {
+                // Opening comment node
+                f.write_fmt(format_args!(r#"<template></template>"#))?;
+
+                for child in self.children().iter() {
+                    <Box<dyn Node<Msg>> as fmt::Display>::fmt(child, f)?;
+                }
+
+                // Closing comment node
+                f.write_fmt(format_args!(r#"<template></template>"#))?;
+
+                Ok(())
+            }
+            Self::Tag { name, children, .. } => {
                 f.write_fmt(format_args!("<{name}>"))?;
 
                 for child in self.children().iter() {
-                    child.fmt(f)?;
+                    <Box<dyn Node<Msg>> as fmt::Display>::fmt(child, f)?;
                 }
 
                 f.write_fmt(format_args!("</{name}>"))?;
@@ -194,17 +467,51 @@ impl<Msg> Display for NodeTree<Msg> {
                 Ok(())
             }
             Self::Text { text, .. } => text.fmt(f),
-            _ => todo!(),
         }
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl<Msg> Drop for NodeTree<Msg> {
+    fn drop(&mut self) {
+        match self {
+            Self::Tag { node, .. } => {
+                if let Some(node) = node {
+                    node.unchecked_ref::<web_sys::Element>().remove();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<Msg> IntoNode<Msg> for NodeTree<Msg>
+where
+    Msg: 'static,
+{
+    fn into_node(self) -> BoxNode<Msg> {
+        Box::new(self)
+    }
+}
+
 impl<Msg> Node<Msg> for NodeTree<Msg> {
-    fn children(&self) -> &Vec<DynNode<Msg>> {
+    fn node(&self) -> &NodeTree<Msg> {
+        self
+    }
+
+    fn children(&self) -> &Vec<BoxNode<Msg>> {
         match self {
             Self::Component { children, .. } => children,
+            Self::Tag { children, .. } => children,
             Self::Text { .. } => panic!("text nodes cannot have children"),
-            _ => todo!(),
+        }
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>> {
+        match self {
+            Self::Component { children, .. } => children,
+            Self::Tag { children, .. } => children,
+            Self::Text { .. } => panic!("text nodes cannot have children"),
         }
     }
 }
@@ -212,15 +519,21 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
 impl<Msg> NodeTree<Msg> {
     fn new_component(name: &'static str) -> Self {
         #[cfg(target_arch = "wasm32")]
-        let (opening_comment, closing_comment) = {
+        let (opening_comment, closing_comment) = if env::is_browser() {
             (
-                document()
-                    .create_comment(&format!(" <{}> ", name))
-                    .unchecked_into(),
-                document()
-                    .create_comment(&format!(" <{} /> ", name))
-                    .unchecked_into(),
+                Some(
+                    document()
+                        .create_comment(&format!(" <{}> ", name))
+                        .unchecked_into(),
+                ),
+                Some(
+                    document()
+                        .create_comment(&format!(" <{} /> ", name))
+                        .unchecked_into(),
+                ),
             )
+        } else {
+            (None, None)
         };
 
         Self::Component {
@@ -238,11 +551,41 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
+    #[track_caller]
+    fn new_element(name: &'static str) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        let node = if env::is_browser() {
+            Some(
+                gloo::utils::document()
+                    .create_element(name)
+                    .expect_throw(&format!(
+                        "failed to create element `{}`",
+                        name
+                    ))
+                    .unchecked_into(),
+            )
+        } else {
+            None
+        };
+
+        Self::Tag {
+            msg_dispatcher: OnceCell::new(),
+            name: name.to_string(),
+            #[cfg(target_arch = "wasm32")]
+            node,
+            children: vec![],
+        }
+    }
+
     fn new_text(text: impl ToString) -> Self {
         let text = text.to_string();
 
         #[cfg(target_arch = "wasm32")]
-        let node = document().create_text_node(&text);
+        let node = if env::is_browser() {
+            Some(document().create_text_node(&text))
+        } else {
+            None
+        };
 
         Self::Text {
             text,
@@ -250,14 +593,51 @@ impl<Msg> NodeTree<Msg> {
             node,
         }
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn from_raw_node(node: web_sys::Node) -> Self {
+        // I'm assuming that if you managed to get your hands on a Node, it's
+        // because we're running in a browser-like environment...
+        let name = node.node_name().to_lowercase();
+
+        Self::Tag {
+            msg_dispatcher: OnceCell::new(),
+            name,
+            node: Some(node),
+            children: vec![],
+        }
+    }
 }
 
 pub struct Comment {
+    /// Optional because we might be running outside the browser.
     #[cfg(target_arch = "wasm32")]
-    node: web_sys::Node,
+    node: Option<web_sys::Node>,
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_can_add_child() {
+        let mut r = NodeTree::<()>::new_component("Root");
+        let child = NodeTree::<()>::new_component("Child");
+
+        r.append_child(Box::new(child));
+
+        assert_eq!(r.children().len(), 1);
+    }
+
+    #[test]
+    fn node_can_clear_children() {
+        let mut r = NodeTree::<()>::new_component("Root");
+        let child = NodeTree::<()>::new_component("Child");
+
+        r.append_child(Box::new(child));
+
+        r.clear_children();
+
+        assert!(r.children().is_empty());
+    }
 }
