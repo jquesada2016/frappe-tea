@@ -13,7 +13,9 @@ categories = ["gui", "no-std", "wasm", "web-programming"]
 
 [features]
 default = ["ssr"]
-ssr = ["base64", "bincode", "serde"]
+ssr = ["base64", "bincode", "serde", "node-tests"]
+web-tests = []
+node-tests = []
 
 [dependencies]
 async-trait = "0.1"

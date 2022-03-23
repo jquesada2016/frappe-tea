@@ -1,8 +1,11 @@
 use core::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::executor::block_on;
+use std::ops::Deref;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
+
+use crate::bindings;
 
 #[macro_export]
 macro_rules! api_planning {

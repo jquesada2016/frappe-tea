@@ -33,8 +33,7 @@ use wasm_bindgen::{prelude::*, JsCast};
 /// This module exposes useful constants regarding the environment of the currently running
 /// app.
 pub mod env {
-    use super::bindings;
-    use std::ops::Deref;
+    use wasm_bindgen::prelude::*;
 
     /// Constant specifying if the app was build in development mode (`debug_assertions`).
     pub const DEV: bool = cfg!(debug_assertions);
@@ -46,40 +45,16 @@ pub mod env {
     /// therefore running on the server, beit a wasm target, such as `node.js`
     /// or `Deno`, or any non-wasm target.
     pub fn is_browser() -> bool {
+        // Can't use web_sys::window() or web_sys::document() because it throws
+        // error
+        #[wasm_bindgen]
+        extern "C" {
+            #[wasm_bindgen(js_namespace = window, catch)]
+            fn document() -> Result<JsValue, JsValue>;
+        }
+
         #[cfg(target_arch = "wasm32")]
-        return *bindings::IS_BROWSER.deref();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        return false;
-    }
-
-    pub fn is_node() -> bool {
-        #[cfg(target_arch = "wasm32")]
-        return *bindings::IS_NODE.deref();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        return false;
-    }
-
-    pub fn is_web_worker() -> bool {
-        #[cfg(target_arch = "wasm32")]
-        return *bindings::IS_WEB_WORKER.deref();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        return false;
-    }
-
-    pub fn is_js_dom() -> bool {
-        #[cfg(target_arch = "wasm32")]
-        return *bindings::IS_JS_DOM.deref();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        return false;
-    }
-
-    pub fn is_deno() -> bool {
-        #[cfg(target_arch = "wasm32")]
-        return *bindings::IS_DENO.deref();
+        return document().is_ok();
 
         #[cfg(not(target_arch = "wasm32"))]
         return false;
@@ -362,6 +337,11 @@ fn render<Msg, const N: usize>(
 where
     Msg: 'static,
 {
+    assert!(
+        env::is_browser(),
+        "this render method is intended to noly work on browsers"
+    );
+
     // First, get the target node
     let target = document()
         .query_selector(target)
@@ -373,6 +353,12 @@ where
 
     // Intern the node into an element
     let mut target = NodeTree::<Msg>::from_raw_node(target);
+
+    // Set target as root
+    match &mut target {
+        NodeTree::Tag { root, .. } => *root = true,
+        _ => unreachable!(),
+    }
 
     // Insert children
     for child in children {
@@ -406,6 +392,9 @@ pub enum NodeTree<Msg> {
         closing_comment: Comment,
     },
     Tag {
+        /// Used to prevent the root node from being removed from the DOM
+        /// when dropped.
+        root: bool,
         msg_dispatcher: OnceCell<Weak<dyn DispatchMsg<Msg>>>,
         name: String,
         /// Optional because we might be running outside the browser.
@@ -475,9 +464,11 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
 impl<Msg> Drop for NodeTree<Msg> {
     fn drop(&mut self) {
         match self {
-            Self::Tag { node, .. } => {
-                if let Some(node) = node {
-                    node.unchecked_ref::<web_sys::Element>().remove();
+            Self::Tag { root, node, .. } => {
+                if !*root {
+                    if let Some(node) = node {
+                        node.unchecked_ref::<web_sys::Element>().remove();
+                    }
                 }
             }
             _ => {}
@@ -569,6 +560,7 @@ impl<Msg> NodeTree<Msg> {
         };
 
         Self::Tag {
+            root: false,
             msg_dispatcher: OnceCell::new(),
             name: name.to_string(),
             #[cfg(target_arch = "wasm32")]
@@ -601,6 +593,7 @@ impl<Msg> NodeTree<Msg> {
         let name = node.node_name().to_lowercase();
 
         Self::Tag {
+            root: false,
             msg_dispatcher: OnceCell::new(),
             name,
             node: Some(node),

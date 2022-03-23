@@ -1,6 +1,7 @@
 //! Test suite for the Web and headless browsers.
 
 #![cfg(target_arch = "wasm32")]
+#![cfg(feature = "web-tests")]
 
 extern crate wasm_bindgen_test;
 use frappe_tea::prelude::*;
@@ -96,4 +97,9 @@ async fn node_can_have_nested_child() {
 #[wasm_bindgen_test]
 fn is_browser() {
     assert!(env::is_browser());
+}
+
+#[wasm_bindgen_test]
+fn is_not_node() {
+    assert!(!env::is_node());
 }
