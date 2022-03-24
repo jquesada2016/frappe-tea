@@ -15,6 +15,7 @@ mod utils;
 mod bindings;
 mod components;
 pub mod html;
+mod testing;
 #[cfg(target_arch = "wasm32")]
 use gloo::utils::document;
 use std::{
@@ -25,9 +26,9 @@ use std::{
     marker::PhantomData,
     ops,
     rc::{Rc, Weak},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use utils::execute_async;
-#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{prelude::*, JsCast};
 
 /// This module exposes useful constants regarding the environment of the currently running
@@ -46,15 +47,23 @@ pub mod env {
     /// or `Deno`, or any non-wasm target.
     pub fn is_browser() -> bool {
         // Can't use web_sys::window() or web_sys::document() because it throws
-        // error
-        #[wasm_bindgen]
-        extern "C" {
-            #[wasm_bindgen(js_namespace = window, catch)]
-            fn document() -> Result<JsValue, JsValue>;
-        }
-
+        // error due to window not being defined to check to see if the window exists...
         #[cfg(target_arch = "wasm32")]
-        return document().is_ok();
+        {
+            let global = js_sys::global();
+
+            let window =
+                js_sys::Reflect::get(&global, &"window".into()).unwrap_throw();
+
+            if window.is_undefined() {
+                return false;
+            }
+
+            let document =
+                js_sys::Reflect::get(&window, &"window".into()).unwrap_throw();
+
+            return !document.is_undefined();
+        };
 
         #[cfg(not(target_arch = "wasm32"))]
         return false;
@@ -68,6 +77,7 @@ pub mod __private_internals__ {
 
 pub mod prelude {
     pub use super::{
+        components::*,
         html::{self, Html},
         *,
     };
@@ -78,9 +88,9 @@ pub type BoxNode<Msg> = Box<dyn Node<Msg>>;
 pub trait Node<Msg> {
     fn node(&self) -> &NodeTree<Msg>;
 
-    fn children(&self) -> &Vec<BoxNode<Msg>>;
+    fn children(&self) -> RwLockReadGuard<Vec<BoxNode<Msg>>>;
 
-    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>>;
+    fn children_mut(&mut self) -> RwLockWriteGuard<Vec<BoxNode<Msg>>>;
 
     fn append_child(&mut self, child: BoxNode<Msg>) {
         #[cfg(target_arch = "wasm32")]
@@ -104,7 +114,10 @@ pub trait Node<Msg> {
                             .unwrap_throw();
 
                         // Next, add all children
-                        children.recursively_append_children_to_dom(parent);
+                        children
+                            .read()
+                            .unwrap_throw()
+                            .recursively_append_children_to_dom(parent);
 
                         // Lastly, insert closing comment node
                         parent
@@ -202,7 +215,10 @@ impl<Msg> NodeVecExt for [BoxNode<Msg>] {
                         .unwrap_throw();
 
                     // Add children
-                    children.recursively_append_children_to_dom(target);
+                    children
+                        .read()
+                        .unwrap_throw()
+                        .recursively_append_children_to_dom(target);
 
                     // Lastly, add closing comment node
                     target
@@ -387,7 +403,7 @@ pub enum NodeTree<Msg> {
         opening_comment: Comment,
         /// Component name
         name: &'static str,
-        children: Vec<BoxNode<Msg>>,
+        children: Arc<RwLock<Vec<BoxNode<Msg>>>>,
         /// Marks the end of a component.
         closing_comment: Comment,
     },
@@ -400,7 +416,7 @@ pub enum NodeTree<Msg> {
         /// Optional because we might be running outside the browser.
         #[cfg(target_arch = "wasm32")]
         node: Option<web_sys::Node>,
-        children: Vec<BoxNode<Msg>>,
+        children: Arc<RwLock<Vec<BoxNode<Msg>>>>,
     },
     Text {
         text: String,
@@ -490,18 +506,18 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
         self
     }
 
-    fn children(&self) -> &Vec<BoxNode<Msg>> {
+    fn children(&self) -> RwLockReadGuard<Vec<BoxNode<Msg>>> {
         match self {
-            Self::Component { children, .. } => children,
-            Self::Tag { children, .. } => children,
+            Self::Component { children, .. } => children.read().unwrap_throw(),
+            Self::Tag { children, .. } => children.read().unwrap_throw(),
             Self::Text { .. } => panic!("text nodes cannot have children"),
         }
     }
 
-    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>> {
+    fn children_mut(&mut self) -> RwLockWriteGuard<Vec<BoxNode<Msg>>> {
         match self {
-            Self::Component { children, .. } => children,
-            Self::Tag { children, .. } => children,
+            Self::Component { children, .. } => children.write().unwrap_throw(),
+            Self::Tag { children, .. } => children.write().unwrap_throw(),
             Self::Text { .. } => panic!("text nodes cannot have children"),
         }
     }
@@ -538,7 +554,7 @@ impl<Msg> NodeTree<Msg> {
                 node: closing_comment,
             },
             name,
-            children: vec![],
+            children: Arc::new(RwLock::new(vec![])),
         }
     }
 
@@ -565,7 +581,7 @@ impl<Msg> NodeTree<Msg> {
             name: name.to_string(),
             #[cfg(target_arch = "wasm32")]
             node,
-            children: vec![],
+            children: Arc::new(RwLock::new(vec![])),
         }
     }
 
@@ -597,7 +613,7 @@ impl<Msg> NodeTree<Msg> {
             msg_dispatcher: OnceCell::new(),
             name,
             node: Some(node),
-            children: vec![],
+            children: Arc::new(RwLock::new(vec![])),
         }
     }
 }
