@@ -12,7 +12,6 @@ extern crate typed_builder;
 #[macro_use]
 #[allow(unused_macros)]
 mod utils;
-mod bindings;
 mod components;
 pub mod html;
 mod testing;

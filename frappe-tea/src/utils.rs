@@ -6,8 +6,6 @@ use std::{lazy::SyncOnceCell, ops::Deref, sync::Arc};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
-use crate::bindings;
-
 #[macro_export]
 macro_rules! api_planning {
     ($($tt:tt)*) => {};
