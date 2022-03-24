@@ -98,8 +98,3 @@ async fn node_can_have_nested_child() {
 fn is_browser() {
     assert!(env::is_browser());
 }
-
-#[wasm_bindgen_test]
-fn is_not_node() {
-    assert!(!env::is_node());
-}
