@@ -3,6 +3,8 @@
 #![cfg(target_arch = "wasm32")]
 #![cfg(feature = "web-tests")]
 
+mod components;
+
 extern crate wasm_bindgen_test;
 use frappe_tea::prelude::*;
 use wasm_bindgen_test::*;
@@ -18,7 +20,7 @@ async fn single_node_renders() {
     fn view(
         _model: &usize,
     ) -> impl std::future::Future<Output = [BoxNode<()>; 1]> {
-        async { [html::h3().into_node()] }
+        async { [html::h3().into_node().await] }
     }
 
     let el = Element::new("body", || (0, None), update, view).await;
@@ -37,7 +39,7 @@ async fn node_can_have_single_child() {
     fn view(
         _model: &usize,
     ) -> impl std::future::Future<Output = [BoxNode<()>; 1]> {
-        async { [html::div().child(html::h1()).into_node()] }
+        async { [html::div().child(html::h1()).await.into_node().await] }
     }
 
     let el = Element::new("body", || (0, None), update, view).await;
@@ -63,12 +65,19 @@ async fn node_can_have_nested_child() {
                 .child(
                     html::div()
                         .child(html::h1())
+                        .await
                         .child(html::h2())
-                        .child(html::h3()),
+                        .await
+                        .child(html::h3())
+                        .await,
                 )
+                .await
                 .child(html::h2())
+                .await
                 .child(html::h3())
-                .into_node()]
+                .await
+                .into_node()
+                .await]
         }
     }
 
