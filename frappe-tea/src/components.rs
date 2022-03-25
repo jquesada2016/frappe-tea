@@ -1,5 +1,8 @@
 use crate::{BoxNode, IntoNode, Node, NodeTree};
-use std::marker::PhantomData;
+use std::{
+    cell::{Ref, RefMut},
+    marker::PhantomData,
+};
 
 pub trait Comp {
     type Props;
@@ -26,11 +29,11 @@ where
         &self.node
     }
 
-    fn children(&self) -> &Vec<BoxNode<Msg>> {
+    fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
         self.node.children()
     }
 
-    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>> {
+    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>> {
         self.node.children_mut()
     }
 

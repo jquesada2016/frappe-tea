@@ -3,7 +3,11 @@ use futures::Stream;
 use paste::paste;
 #[cfg(feature = "ssr")]
 use serde::{Deserialize, Serialize};
-use std::{fmt, marker::PhantomData};
+use std::{
+    cell::{Ref, RefMut},
+    fmt,
+    marker::PhantomData,
+};
 use wasm_bindgen::prelude::*;
 
 mod sealed {
@@ -211,7 +215,7 @@ where
             .expect("attempted to get node after calling `into_node()`")
     }
 
-    fn children(&self) -> &Vec<BoxNode<Msg>> {
+    fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
         self.node
             .as_ref()
             .expect_throw(
@@ -220,7 +224,7 @@ where
             .children()
     }
 
-    fn children_mut(&mut self) -> &mut Vec<BoxNode<Msg>> {
+    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>> {
         self.node
             .as_mut()
             .expect_throw(

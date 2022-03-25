@@ -18,7 +18,7 @@ mod testing;
 #[cfg(target_arch = "wasm32")]
 use gloo::utils::document;
 use std::{
-    cell::RefCell,
+    cell::{Ref, RefCell, RefMut},
     fmt,
     future::Future,
     lazy::OnceCell,
@@ -87,9 +87,9 @@ pub type BoxNode<Msg> = Box<dyn Node<Msg>>;
 pub trait Node<Msg> {
     fn node(&self) -> &NodeTree<Msg>;
 
-    fn children(&self) -> RwLockReadGuard<Vec<BoxNode<Msg>>>;
+    fn children(&self) -> Ref<Vec<BoxNode<Msg>>>;
 
-    fn children_mut(&mut self) -> RwLockWriteGuard<Vec<BoxNode<Msg>>>;
+    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>>;
 
     fn append_child(&mut self, child: BoxNode<Msg>) {
         #[cfg(target_arch = "wasm32")]
@@ -402,7 +402,7 @@ pub enum NodeTree<Msg> {
         opening_comment: Comment,
         /// Component name
         name: &'static str,
-        children: Arc<RwLock<Vec<BoxNode<Msg>>>>,
+        children: Rc<RefCell<Vec<BoxNode<Msg>>>>,
         /// Marks the end of a component.
         closing_comment: Comment,
     },
@@ -415,7 +415,7 @@ pub enum NodeTree<Msg> {
         /// Optional because we might be running outside the browser.
         #[cfg(target_arch = "wasm32")]
         node: Option<web_sys::Node>,
-        children: Arc<RwLock<Vec<BoxNode<Msg>>>>,
+        children: Rc<RefCell<Vec<BoxNode<Msg>>>>,
     },
     Text {
         text: String,
@@ -505,18 +505,18 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
         self
     }
 
-    fn children(&self) -> RwLockReadGuard<Vec<BoxNode<Msg>>> {
+    fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
         match self {
-            Self::Component { children, .. } => children.read().unwrap_throw(),
-            Self::Tag { children, .. } => children.read().unwrap_throw(),
+            Self::Component { children, .. } => children.borrow(),
+            Self::Tag { children, .. } => children.borrow(),
             Self::Text { .. } => panic!("text nodes cannot have children"),
         }
     }
 
-    fn children_mut(&mut self) -> RwLockWriteGuard<Vec<BoxNode<Msg>>> {
+    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>> {
         match self {
-            Self::Component { children, .. } => children.write().unwrap_throw(),
-            Self::Tag { children, .. } => children.write().unwrap_throw(),
+            Self::Component { children, .. } => children.borrow_mut(),
+            Self::Tag { children, .. } => children.borrow_mut(),
             Self::Text { .. } => panic!("text nodes cannot have children"),
         }
     }
@@ -553,7 +553,7 @@ impl<Msg> NodeTree<Msg> {
                 node: closing_comment,
             },
             name,
-            children: Arc::new(RwLock::new(vec![])),
+            children: Rc::new(RefCell::new(vec![])),
         }
     }
 
@@ -580,7 +580,7 @@ impl<Msg> NodeTree<Msg> {
             name: name.to_string(),
             #[cfg(target_arch = "wasm32")]
             node,
-            children: Arc::new(RwLock::new(vec![])),
+            children: Rc::new(RefCell::new(vec![])),
         }
     }
 

@@ -1,7 +1,7 @@
 use core::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
-use futures::executor::ThreadPool;
-use futures::task::SpawnExt;
+use futures::executor::LocalPool;
+use futures::task::{LocalSpawn, LocalSpawnExt, SpawnExt};
 use std::{lazy::SyncOnceCell, ops::Deref, sync::Arc};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
@@ -13,17 +13,13 @@ macro_rules! api_planning {
 
 pub async fn execute_async<Fut>(future: Fut)
 where
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = ()> + 'static,
 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        static THREAD_POOL: SyncOnceCell<ThreadPool> = SyncOnceCell::new();
+        let tp = LocalPool::new();
 
-        let tp = THREAD_POOL.get_or_init(|| {
-            ThreadPool::new().expect("failed to create thread pool")
-        });
-
-        tp.spawn(future);
+        tp.spawner().spawn_local(future);
     }
 
     #[cfg(target_arch = "wasm32")]
