@@ -114,8 +114,7 @@ pub trait Node<Msg> {
 
                         // Next, add all children
                         children
-                            .read()
-                            .unwrap_throw()
+                            .borrow()
                             .recursively_append_children_to_dom(parent);
 
                         // Lastly, insert closing comment node
@@ -215,8 +214,7 @@ impl<Msg> NodeVecExt for [BoxNode<Msg>] {
 
                     // Add children
                     children
-                        .read()
-                        .unwrap_throw()
+                        .borrow()
                         .recursively_append_children_to_dom(target);
 
                     // Lastly, add closing comment node
@@ -612,7 +610,7 @@ impl<Msg> NodeTree<Msg> {
             msg_dispatcher: OnceCell::new(),
             name,
             node: Some(node),
-            children: Arc::new(RwLock::new(vec![])),
+            children: Rc::new(RefCell::new(vec![])),
         }
     }
 }
