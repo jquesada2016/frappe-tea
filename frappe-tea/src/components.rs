@@ -1,6 +1,8 @@
+mod dyn_child;
 mod if_;
 
 use crate::{BoxNode, IntoNode, Node, NodeTree};
+pub use dyn_child::*;
 pub use if_::*;
 use std::{
     cell::{Ref, RefCell, RefMut},
