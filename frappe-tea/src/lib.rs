@@ -87,6 +87,8 @@ pub type BoxNode<Msg> = Box<dyn Node<Msg>>;
 pub trait Node<Msg> {
     fn node(&self) -> &NodeTree<Msg>;
 
+    fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>>;
+
     fn children(&self) -> Ref<Vec<BoxNode<Msg>>>;
 
     fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>>;
@@ -503,6 +505,14 @@ where
 impl<Msg> Node<Msg> for NodeTree<Msg> {
     fn node(&self) -> &NodeTree<Msg> {
         self
+    }
+
+    fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
+        match self {
+            Self::Component { children, .. } => children.clone(),
+            Self::Tag { children, .. } => children.clone(),
+            Self::Text { .. } => panic!("text nodes cannot have children"),
+        }
     }
 
     fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {

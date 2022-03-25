@@ -4,9 +4,10 @@ use paste::paste;
 #[cfg(feature = "ssr")]
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::{Ref, RefMut},
+    cell::{Ref, RefCell, RefMut},
     fmt,
     marker::PhantomData,
+    rc::Rc,
 };
 use wasm_bindgen::prelude::*;
 
@@ -214,6 +215,15 @@ where
             .node
             .as_ref()
             .expect("attempted to get node after calling `into_node()`")
+    }
+
+    fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
+        self.node
+            .as_ref()
+            .expect_throw(
+                "attempted to get children after calling `into_node()`",
+            )
+            .children_rc()
     }
 
     fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
