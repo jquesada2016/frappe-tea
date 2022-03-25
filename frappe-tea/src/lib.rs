@@ -290,7 +290,7 @@ where
 
         let children = view(&this.model.borrow()).await;
 
-        let root_node = render(target, children, this_weak);
+        let root_node = render(target, children, this_weak).await;
 
         this.root_node.set(root_node).unwrap_throw();
 
@@ -345,7 +345,7 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-fn render<Msg, const N: usize>(
+async fn render<Msg, const N: usize>(
     target: &str,
     children: [BoxNode<Msg>; N],
     dispatch_msg_weak: Weak<dyn DispatchMsg<Msg>>,
@@ -381,7 +381,7 @@ where
         target.append_child(child);
     }
 
-    target.into_node()
+    target.into_node().await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
