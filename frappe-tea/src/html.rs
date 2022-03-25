@@ -16,6 +16,7 @@ mod sealed {
     impl Sealed for () {}
 }
 
+#[async_trait(?Send)]
 pub trait Html<Msg>: sealed::Sealed + Node<Msg> {
     fn text(&mut self, text: impl ToString) -> &mut Self {
         todo!()
@@ -33,8 +34,8 @@ pub trait Html<Msg>: sealed::Sealed + Node<Msg> {
         todo!()
     }
 
-    fn child(&mut self, child: impl IntoNode<Msg>) -> &mut Self {
-        self.append_child(child.into_node());
+    async fn child<'a>(&mut self, child: impl IntoNode<Msg> + 'a) -> &mut Self {
+        self.append_child(child.into_node().await);
 
         self
     }
@@ -243,28 +244,32 @@ where
     }
 }
 
+#[async_trait(?Send)]
 impl<E, Msg> IntoNode<Msg> for HtmlElement<E, Msg>
 where
     Msg: 'static,
     E: sealed::Sealed + 'static,
 {
-    fn into_node(self) -> BoxNode<Msg> {
+    async fn into_node(self) -> BoxNode<Msg> {
         self.node
             .expect_throw("called `into_node()` more than once")
             .into_node()
+            .await
     }
 }
 
+#[async_trait(?Send)]
 impl<E, Msg> IntoNode<Msg> for &mut HtmlElement<E, Msg>
 where
     Msg: 'static,
     E: sealed::Sealed + 'static,
 {
-    fn into_node(self) -> BoxNode<Msg> {
+    async fn into_node(self) -> BoxNode<Msg> {
         self.node
             .take()
             .expect_throw("called `into_node()` more than once")
             .into_node()
+            .await
     }
 }
 

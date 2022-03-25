@@ -229,8 +229,9 @@ impl<Msg> NodeVecExt for [BoxNode<Msg>] {
     }
 }
 
+#[async_trait(?Send)]
 pub trait IntoNode<Msg> {
-    fn into_node(self) -> BoxNode<Msg>;
+    async fn into_node(self) -> BoxNode<Msg>;
 }
 
 trait DispatchMsg<Msg> {
@@ -489,11 +490,12 @@ impl<Msg> Drop for NodeTree<Msg> {
     }
 }
 
+#[async_trait(?Send)]
 impl<Msg> IntoNode<Msg> for NodeTree<Msg>
 where
     Msg: 'static,
 {
-    fn into_node(self) -> BoxNode<Msg> {
+    async fn into_node(self) -> BoxNode<Msg> {
         Box::new(self)
     }
 }
