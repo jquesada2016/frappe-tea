@@ -348,6 +348,8 @@ generate_html_tags![body, div, button, h1, h2, h3];
 
 #[cfg(test)]
 mod tests {
+    use futures::executor::block_on;
+
     use super::*;
 
     #[test]
@@ -363,14 +365,14 @@ mod tests {
 
     #[test]
     fn el_eq_el_node() {
-        let node: BoxNode<()> = div().into_node();
+        let node: BoxNode<()> = block_on(div().into_node());
 
         assert_eq!(&Div, &node);
     }
 
     #[test]
     fn el_not_eq_el_node() {
-        let node: BoxNode<()> = div().into_node();
+        let node: BoxNode<()> = block_on(div().into_node());
 
         assert_ne!(&H1, &node);
     }
