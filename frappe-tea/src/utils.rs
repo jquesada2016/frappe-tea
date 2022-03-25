@@ -11,6 +11,33 @@ macro_rules! api_planning {
     ($($tt:tt)*) => {};
 }
 
+#[macro_export]
+macro_rules! cloned {
+    () => {};
+    ([$($tt:tt)*], $expr:expr) => {{
+        cloned!($($tt)*);
+
+        $expr
+    }};
+    ($(,)? mut { $expr:expr } as $ident:ident $($tt:tt)*) => {
+        let mut $ident = ::core::clone::Clone::clone(&$expr);
+        cloned!($($tt)*);
+    };
+    ($(,)? mut $ident:ident $($tt:tt)*) => {
+        let mut $ident = ::core::clone::Clone::clone(&$ident);
+        cloned!($($tt)*);
+    };
+    ($(,)? { $expr:expr } as $ident:ident $($tt:tt)*) => {
+        let $ident = ::core::clone::Clone::clone(&$expr);
+        cloned!($($tt)*);
+    };
+    ($(,)? $ident:ident $($tt:tt)*) => {
+        let $ident = ::core::clone::Clone::clone(&$ident);
+        cloned!($($tt)*);
+    };
+    ($(,)?) => {};
+}
+
 pub async fn execute_async<Fut>(future: Fut)
 where
     Fut: Future<Output = ()> + 'static,
