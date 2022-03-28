@@ -4,8 +4,14 @@
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
+extern crate educe;
+#[macro_use]
 #[allow(unused_imports)]
 extern crate enum_dispatch;
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate static_assertions;
 #[macro_use]
 extern crate typed_builder;
 
@@ -14,6 +20,7 @@ extern crate typed_builder;
 mod utils;
 mod components;
 pub mod html;
+mod reactive;
 mod testing;
 #[cfg(target_arch = "wasm32")]
 use gloo::utils::document;
@@ -21,11 +28,11 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     fmt,
     future::Future,
-    lazy::OnceCell,
+    lazy::{OnceCell, SyncOnceCell},
     marker::PhantomData,
     ops,
     rc::{Rc, Weak},
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{self, Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 use utils::execute_async;
 use wasm_bindgen::{prelude::*, JsCast};
@@ -82,6 +89,10 @@ pub mod prelude {
     };
 }
 
+// #[cfg(not(target_arch = "wasm32"))]
+// pub type BoxNode<Msg> = Box<dyn Node<Msg> + Send>;
+
+// #[cfg(target_arch = "wasm32")]
 pub type BoxNode<Msg> = Box<dyn Node<Msg>>;
 
 pub trait Node<Msg> {
@@ -627,11 +638,67 @@ impl<Msg> NodeTree<Msg> {
     }
 }
 
+struct Element<Msg> {
+    /// Reference to the message dispatcher
+    msg_dispatcher: MsgDispatcher<Msg>,
+    /// Marks the start of a component.
+    opening_comment: Comment,
+    /// Component name
+    name: &'static str,
+    children: Children<Msg>,
+    /// Marks the end of a component.
+    closing_comment: Comment,
+}
+
+struct Tag<Msg> {
+    /// Used to prevent the root node from being removed from the DOM
+    /// when dropped.
+    root: bool,
+    msg_dispatcher: MsgDispatcher<Msg>,
+    name: String,
+    /// Optional because we might be running outside the browser.
+    #[cfg(target_arch = "wasm32")]
+    node: Option<web_sys::Node>,
+    children: Children<Msg>,
+}
+
+// #[cfg(not(target_arch = "wasm32"))]
+// assert_impl_all!(Tag<()>: Send);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct MsgDispatcher<Msg> {
+    dispatcher: SyncOnceCell<sync::Weak<dyn DispatchMsg<Msg> + Sync + Send>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+assert_impl_all!(MsgDispatcher<()>: Send);
+
+#[cfg(target_arch = "wasm32")]
+struct MsgDispatcher<Msg> {
+    dispatcher: OnceCell<Weak<dyn DispatchMsg<Msg>>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct Children<Msg> {
+    children: Arc<Mutex<Vec<BoxNode<Msg>>>>,
+}
+
+// #[cfg(not(target_arch = "wasm32"))]
+// assert_impl_all!(Children<()>: Send);
+
+#[cfg(target_arch = "wasm32")]
+struct Children<Msg> {
+    children: Rc<RefCell<Vec<BoxNode<Msg>>>>,
+}
+
 pub struct Comment {
     /// Optional because we might be running outside the browser.
     #[cfg(target_arch = "wasm32")]
     node: Option<web_sys::Node>,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+assert_impl_all!(Comment: Send);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
