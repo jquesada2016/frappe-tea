@@ -7,7 +7,9 @@ pub use if_::*;
 use std::{
     cell::{Ref, RefCell, RefMut},
     marker::PhantomData,
+    ops,
     rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 pub trait Comp {
@@ -35,15 +37,25 @@ where
         &self.node
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn children_rc(&self) -> Arc<Mutex<Vec<BoxNode<Msg>>>> {
+        self.node.children_rc()
+    }
+
+    #[cfg(target_arch = "wasm32")]
     fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
         self.node.children_rc()
     }
 
-    fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
+    fn children<'a>(
+        &'a self,
+    ) -> Box<dyn ops::Deref<Target = Vec<BoxNode<Msg>>> + 'a> {
         self.node.children()
     }
 
-    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>> {
+    fn children_mut(
+        &mut self,
+    ) -> Box<dyn ops::DerefMut<Target = Vec<BoxNode<Msg>>>> {
         self.node.children_mut()
     }
 

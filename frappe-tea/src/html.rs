@@ -7,7 +7,9 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     fmt,
     marker::PhantomData,
+    ops,
     rc::Rc,
+    sync::{Arc, Mutex},
 };
 use wasm_bindgen::prelude::*;
 
@@ -217,6 +219,17 @@ where
             .expect("attempted to get node after calling `into_node()`")
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn children_rc(&self) -> Arc<Mutex<Vec<BoxNode<Msg>>>> {
+        self.node
+            .as_ref()
+            .expect_throw(
+                "attempted to get children after calling `into_node()`",
+            )
+            .children_rc()
+    }
+
+    #[cfg(target_arch = "wasm32")]
     fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
         self.node
             .as_ref()
@@ -226,7 +239,9 @@ where
             .children_rc()
     }
 
-    fn children(&self) -> Ref<Vec<BoxNode<Msg>>> {
+    fn children<'a>(
+        &'a self,
+    ) -> Box<dyn ops::Deref<Target = Vec<BoxNode<Msg>>> + 'a> {
         self.node
             .as_ref()
             .expect_throw(
@@ -235,7 +250,9 @@ where
             .children()
     }
 
-    fn children_mut(&mut self) -> RefMut<Vec<BoxNode<Msg>>> {
+    fn children_mut(
+        &mut self,
+    ) -> Box<dyn ops::DerefMut<Target = Vec<BoxNode<Msg>>>> {
         self.node
             .as_mut()
             .expect_throw(
