@@ -35,7 +35,7 @@ macro_rules! cloned {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn _execute_async<Fut>(future: Fut)
+pub fn spawn<Fut>(future: Fut)
 where
     Fut: Future<Output = ()> + Send + 'static,
 {
