@@ -18,7 +18,6 @@ use utils::spawn;
 
 #[macro_use]
 mod utils;
-mod runtime;
 pub mod testing;
 
 pub type DynNode<Msg> = Box<dyn Node<Msg> + Send>;
@@ -199,8 +198,20 @@ where
     }
 }
 
+enum NodeKind {
+    Component,
+    Tag {
+        #[cfg(target_arch = "wasm32")]
+        node: WasmValue<web_sys::Node>,
+    },
+    Comment,
+}
+
+assert_impl_all!(NodeKind: Send);
+
 pub struct NodeTree<Msg> {
-    _phantom: PhantomData<Msg>,
+    _node: NodeKind,
+    _children: Mutex<Vec<DynNode<Msg>>>,
 }
 
 assert_impl_all!(NodeTree<()>: Send);
@@ -210,6 +221,17 @@ impl<Msg> fmt::Debug for NodeTree<Msg> {
         todo!()
     }
 }
+
+/// Wrapper to mark any JavaScript value as thread safe.
+///
+/// # Safety
+/// This is only safe if you can guarantee the value will only ever be accessed on the main
+/// thread. For the most part, this means, if you are running in the browser, then it is
+/// safe to access this value (for now).
+struct WasmValue<T>(T);
+
+unsafe impl<T> Send for WasmValue<T> {}
+unsafe impl<T> Sync for WasmValue<T> {}
 
 // =============================================================================
 //                            Functions
