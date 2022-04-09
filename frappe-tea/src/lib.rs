@@ -23,7 +23,7 @@ use wasm_bindgen::JsCast;
 
 #[macro_use]
 mod utils;
-pub mod html;
+// pub mod html;
 pub mod testing;
 
 pub type DynNode<Msg> = Box<dyn Node<Msg> + Send>;
@@ -58,14 +58,14 @@ pub trait Node<Msg> {
 
     fn set_ctx(&mut self, cx: Context<Msg>);
 
-    fn children(&self) -> ChildrenRef<Msg>;
+    async fn children(&self) -> ChildrenRef<Msg>;
 
-    fn children_mut(&mut self) -> ChildrenMut<Msg>;
+    async fn children_mut(&mut self) -> ChildrenMut<Msg>;
 
     #[track_caller]
-    fn append_child(&mut self, child: DynNode<Msg>);
+    async fn append_child(&mut self, child: DynNode<Msg>);
 
-    fn clear_children(&mut self);
+    async fn clear_children(&mut self);
 }
 
 assert_obj_safe!(Node<()>);
@@ -149,12 +149,14 @@ where
         let mut model_lock = self.model.lock().await;
 
         // Get the model
-        let mut model = model_gaurd.take().expect("model to not be taken");
+        let mut model = model_lock.take().expect("model to not be taken");
 
         let cmd = (self.update)(&mut model, msg).await;
 
         // Return model
         *model_lock = Some(model);
+
+        drop(model_lock);
 
         if let Some(cmd) = cmd {
             spawn(self.perform_cmd(cmd));
@@ -207,14 +209,14 @@ where
             Arc::downgrade(&this) as Weak<dyn DispatchMsg<Msg> + Send + Sync>;
 
         let cx = Context {
-            msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak.clone()),
+            msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
             ..Default::default()
         };
 
         let children =
-            view(this.model.lock().unwrap().as_ref().unwrap(), cx).await;
+            view(this.model.lock().await.as_ref().unwrap(), cx).await;
 
-        let root_node = render(target, children, msg_dispatcher_weak).await;
+        let root_node = render(target, children).await;
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -293,7 +295,7 @@ impl Id {
         self.3 = Some(custom_id);
     }
 
-    fn _set_id(&mut self, parent_id: &Id, index: usize) {
+    fn set_id(&mut self, parent_id: &Id, index: usize) {
         self._set_sum(parent_id.0 + parent_id.1 + parent_id.2);
 
         self._set_depth(parent_id.1 + 1);
@@ -595,14 +597,14 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
     }
 
     async fn children(&self) -> ChildrenRef<Msg> {
-        ChildrenRef(self.children.lock().unwrap())
+        ChildrenRef(self.children.lock().await)
     }
 
     async fn children_mut(&mut self) -> ChildrenMut<Msg> {
-        ChildrenMut(self.children.lock().unwrap())
+        ChildrenMut(self.children.lock().await)
     }
 
-    fn append_child(&mut self, child: DynNode<Msg>) {
+    async fn append_child(&mut self, child: DynNode<Msg>) {
         // We only need to insert items into the DOM when we are running
         // in the browser
         // app
@@ -642,11 +644,11 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
             }
         }
 
-        self.children_mut().push(child);
+        self.children_mut().await.push(child);
     }
 
-    fn clear_children(&mut self) {
-        self.children_mut().clear();
+    async fn clear_children(&mut self) {
+        self.children_mut().await.clear();
     }
 }
 
@@ -668,11 +670,7 @@ unsafe impl<T> Sync for WasmValue<T> {}
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-async fn render<Msg>(
-    target: &str,
-    child: DynNode<Msg>,
-    msg_dispatcher_weak: Weak<dyn DispatchMsg<Msg>>,
-) -> NodeTree<Msg> {
+async fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
         let target = gloo::utils::document()
@@ -687,12 +685,17 @@ async fn render<Msg>(
         // Intern the target node
         let mut target = NodeTree::from_raw_node(target.unchecked_into());
 
-        target.append_child(child);
+        target.append_child(child).await;
 
         target
     } else {
         todo!()
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn render<Msg>(_target: &str, _child: DynNode<Msg>) -> NodeTree<Msg> {
+    todo!()
 }
 
 api_planning! {

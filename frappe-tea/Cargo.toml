@@ -11,8 +11,9 @@ categories = ["gui", "no-std", "wasm", "web-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-bench = false
+[[bench]]
+name = "lib"
+harness = false
 
 [features]
 default = ["ssr", "hmr", "web-tests"]
@@ -32,6 +33,7 @@ enum_dispatch = "0.3"
 futures = "0.3"
 log = "0.4"
 paste = "1.0"
+rayon = "1.5"
 serde = { version = "1.0", optional = true }
 static_assertions = "1.1"
 typed-builder = "0.10"
