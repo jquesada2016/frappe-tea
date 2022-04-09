@@ -11,11 +11,15 @@ categories = ["gui", "no-std", "wasm", "web-programming"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+bench = false
+
 [features]
-default = ["ssr", "web-tests"]
+default = ["ssr", "hmr", "web-tests"]
 ssr = ["base64", "bincode", "serde"]
 web-tests = []
 node-tests = []
+hmr = ["base64", "bincode", "serde"]
 
 [dependencies]
 async-trait = "0.1"
@@ -26,15 +30,19 @@ contracts = "0.6"
 educe = "0.4"
 enum_dispatch = "0.3"
 futures = "0.3"
-gloo = "0.6"
 log = "0.4"
 paste = "1.0"
 serde = { version = "1.0", optional = true }
 static_assertions = "1.1"
 typed-builder = "0.10"
-wasm-bindgen = "0.2"
 
-[dependencies.web-sys]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo = "0.6"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
 features = [
     "Comment",
@@ -43,14 +51,11 @@ features = [
     "Event",
 ]
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen-futures = "0.4"
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.17", features = ["rt"] }
 
 [dev-dependencies]
+criterion = "0.3"
 # Fixes issue with proptest not building on wasm32-unknown-unknwon target
 getrandom = { version = "0.2", features = ["js"] }
 mockall = "0.11"

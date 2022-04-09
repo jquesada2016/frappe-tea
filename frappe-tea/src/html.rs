@@ -1,17 +1,240 @@
-use crate::{BoxNode, IntoNode, Node, NodeTree};
+use crate::{ChildrenMut, ChildrenRef, Id, IntoNode, Node, NodeKind};
+use paste::paste;
+use sealed::*;
+use std::{fmt, future::Future, marker::PhantomData};
+
+use crate::{Context, DynNode, NodeTree};
+
+mod sealed {
+    pub trait Sealed {}
+
+    impl Sealed for () {}
+}
+
+#[async_trait]
+pub trait Html<Msg>: Sealed + Node<Msg>
+where
+    Msg: 'static,
+{
+    async fn text<'a>(
+        &mut self,
+        text: impl ToString + Send + Sync + 'a,
+    ) -> &mut Self {
+        self.append_child(
+            NodeTree::new_text(&text.to_string()).into_node().await,
+        );
+
+        self
+    }
+
+    async fn child<'a, F>(
+        &mut self,
+        child_fn: impl FnOnce(Context<Msg>) -> F + Send + Sync + 'a,
+    ) -> &mut Self
+    where
+        F: Future<Output = DynNode<Msg>> + Send,
+    {
+        let index = self.children().len();
+        let cx = self.cx();
+
+        let mut child_cx = Context {
+            msg_dispatcher: cx.msg_dispatcher.clone(),
+            ..Default::default()
+        };
+
+        child_cx.id._set_id(&cx.id, index);
+
+        let child = child_fn(child_cx).await;
+
+        self.append_child(child);
+
+        self
+    }
+}
+
+pub struct HtmlElement<E, Msg> {
+    _element: PhantomData<E>,
+    /// This field is `Option<_>` because it gaurds agains calling [IntoNode::into_node`]
+    /// more than once.
+    node: Option<NodeTree<Msg>>,
+}
+
+impl<E, Msg> sealed::Sealed for HtmlElement<E, Msg> where E: sealed::Sealed {}
+
+impl<E, Msg> Html<Msg> for HtmlElement<E, Msg>
+where
+    Msg: 'static,
+    E: sealed::Sealed,
+{
+}
+
+#[async_trait]
+impl<E, Msg> IntoNode<Msg> for HtmlElement<E, Msg>
+where
+    Msg: 'static,
+    E: sealed::Sealed + Send + 'static,
+{
+    async fn into_node(self) -> DynNode<Msg> {
+        self.node
+            .expect("called `into_node()` more than once")
+            .into_node()
+            .await
+    }
+}
+
+#[async_trait]
+impl<E, Msg> IntoNode<Msg> for &mut HtmlElement<E, Msg>
+where
+    Msg: 'static,
+    E: sealed::Sealed + Send + Sync + 'static,
+{
+    async fn into_node(self) -> DynNode<Msg> {
+        self.node
+            .take()
+            .expect("called `into_node()` more than once")
+            .into_node()
+            .await
+    }
+}
+
+impl<E, Msg> Node<Msg> for HtmlElement<E, Msg>
+where
+    E: sealed::Sealed,
+{
+    fn node(&self) -> &NodeKind {
+        self.node
+            .as_ref()
+            .expect("attempted to use node interface after calling `into_node`")
+            .node()
+    }
+
+    fn node_mut(&mut self) -> &mut NodeKind {
+        self.node
+            .as_mut()
+            .expect("attempted to use node interface after calling `into_node`")
+            .node_mut()
+    }
+
+    fn cx(&self) -> &Context<Msg> {
+        self.node
+            .as_ref()
+            .expect("attempted to use node interface after calling `into_node`")
+            .cx()
+    }
+
+    fn set_ctx(&mut self, cx: Context<Msg>) {
+        self.node
+            .as_mut()
+            .expect("attempted to use node interface after calling `into_node`")
+            .set_ctx(cx)
+    }
+
+    fn children(&self) -> ChildrenRef<Msg> {
+        self.node
+            .as_ref()
+            .expect("attempted to use node interface after calling `into_node`")
+            .children()
+    }
+
+    fn children_mut(&mut self) -> ChildrenMut<Msg> {
+        self.node
+            .as_mut()
+            .expect("attempted to use node interface after calling `into_node`")
+            .children_mut()
+    }
+
+    #[track_caller]
+    fn append_child(&mut self, child: DynNode<Msg>) {
+        self.node
+            .as_mut()
+            .expect("attempted to use node interface after calling `into_node`")
+            .append_child(child)
+    }
+
+    fn clear_children(&mut self) {
+        self.node
+            .as_mut()
+            .expect("attempted to use node interface after calling `into_node`")
+            .clear_children()
+    }
+}
+
+impl<E, Msg> HtmlElement<E, Msg>
+where
+    E: sealed::Sealed + ToString,
+{
+    pub fn new(element: E) -> Self {
+        Self {
+            _element: PhantomData::default(),
+            node: Some(NodeTree::new_tag(&element.to_string())),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_raw_node(_element: E, node: web_sys::Node) -> Self {
+        Self {
+            _element: PhantomData::default(),
+            node: Some(NodeTree::from_raw_node(node)),
+        }
+    }
+}
+
+macro_rules! generate_html_tags {
+    ($($tag:ident),* $(,)?) => {
+        paste! {
+            $(
+                #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+                pub struct [<$tag:camel>];
+
+                impl sealed::Sealed for [<$tag:camel>] {}
+
+                impl fmt::Display for [<$tag:camel>] {
+                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str(stringify!($tag))
+                    }
+                }
+
+                impl<Msg> PartialEq<DynNode<Msg> > for [<$tag:camel>] {
+                    fn eq(&self, rhs: &DynNode<Msg> ) -> bool {
+                        match rhs.node() {
+                            NodeKind::Tag { name, .. } => *name == self.to_string(),
+                            _ => false,
+                        }
+                    }
+                }
+
+                impl<Msg> PartialEq<[<$tag:camel>]> for DynNode<Msg>  {
+                    fn eq(&self, rhs: &[<$tag:camel>]) -> bool {
+                        match self.node() {
+                            NodeKind::Tag { name, .. } => *name == rhs.to_string(),
+                            _ => false,
+                        }
+                    }
+                }
+
+                pub fn $tag<Msg>() -> HtmlElement<[<$tag:camel>], Msg> {
+                    HtmlElement::new([<$tag:camel>])
+                }
+            )*
+        }
+    };
+}
+
+generate_html_tags![body, div, button, h1, h2, h3];
+
+// =============================================================================
+//                          Old version
+// =============================================================================
+
+api_planning! {
+use crate::{
+    BoxNode, ChildrenMut, ChildrenRef, DynNode, IntoNode, Node, NodeTree,
+};
 use futures::Stream;
 use paste::paste;
-#[cfg(feature = "ssr")]
+#[cfg(any(feature = "ssr", feature = "hmr"))]
 use serde::{Deserialize, Serialize};
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    fmt,
-    marker::PhantomData,
-    ops,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
-use wasm_bindgen::prelude::*;
+use std::{fmt, marker::PhantomData};
 
 mod sealed {
     pub trait Sealed {}
@@ -197,10 +420,13 @@ pub trait Html<Msg>: sealed::Sealed + Node<Msg> {
     }
 }
 
+#[derive(Educe)]
+#[educe(Deref, DerefMut)]
 pub struct HtmlElement<E, Msg> {
-    _element: PhantomData<E>,
+    element: E,
     /// This field is `Option<_>` because it gaurds agains calling [IntoNode::into_node`]
     /// more than once.
+    #[educe(Target)]
     node: Option<NodeTree<Msg>>,
 }
 
@@ -219,55 +445,32 @@ where
             .expect("attempted to get node after calling `into_node()`")
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn children_rc(&self) -> Arc<Mutex<Vec<BoxNode<Msg>>>> {
+    fn children(&self) -> ChildrenRef<Msg> {
         self.node
             .as_ref()
-            .expect_throw(
-                "attempted to get children after calling `into_node()`",
-            )
+            .expect("attempted to get children after calling `into_node()`")
             .children_rc()
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
-        self.node
-            .as_ref()
-            .expect_throw(
-                "attempted to get children after calling `into_node()`",
-            )
-            .children_rc()
-    }
-
-    fn children<'a>(
-        &'a self,
-    ) -> Box<dyn ops::Deref<Target = Vec<BoxNode<Msg>>> + 'a> {
-        self.node
-            .as_ref()
-            .expect_throw(
-                "attempted to get children after calling `into_node()`",
-            )
-            .children()
-    }
-
-    fn children_mut(
-        &mut self,
-    ) -> Box<dyn ops::DerefMut<Target = Vec<BoxNode<Msg>>>> {
+    fn children_mut(&mut self) -> ChildrenMut<Msg> {
         self.node
             .as_mut()
-            .expect_throw(
-                "attempted to get children after calling `into_node()`",
-            )
+            .expect("attempted to get children after calling `into_node()`")
             .children_mut()
     }
 
-    fn append_child(&mut self, child: BoxNode<Msg>) {
+    fn append_child(&mut self, child: DynNode<Msg>) {
         self.node
             .as_mut()
-            .expect_throw(
-                "attempted to append child after calling `into_node()`",
-            )
+            .expect("attempted to append child after calling `into_node()`")
             .append_child(child);
+    }
+
+    fn clear_children(&mut self) {
+        self.node
+            .as_mut()
+            .expect("attempted to append child after calling `into_node()`")
+            .clear_children();
     }
 }
 
@@ -277,9 +480,9 @@ where
     Msg: 'static,
     E: sealed::Sealed + 'static,
 {
-    async fn into_node(self) -> BoxNode<Msg> {
+    async fn into_node(self) -> DynNode<Msg> {
         self.node
-            .expect_throw("called `into_node()` more than once")
+            .expect("called `into_node()` more than once")
             .into_node()
             .await
     }
@@ -291,10 +494,10 @@ where
     Msg: 'static,
     E: sealed::Sealed + 'static,
 {
-    async fn into_node(self) -> BoxNode<Msg> {
+    async fn into_node(self) -> DynNode<Msg> {
         self.node
             .take()
-            .expect_throw("called `into_node()` more than once")
+            .expect("called `into_node()` more than once")
             .into_node()
             .await
     }
@@ -335,8 +538,8 @@ macro_rules! generate_html_tags {
                     }
                 }
 
-                impl<Msg> PartialEq<BoxNode<Msg>> for [<$tag:camel>] {
-                    fn eq(&self, rhs: &BoxNode<Msg>) -> bool {
+                impl<Msg> PartialEq<DynNode<Msg> > for [<$tag:camel>] {
+                    fn eq(&self, rhs: &DynNode<Msg> ) -> bool {
                         match rhs.node() {
                             NodeTree::Tag { name, .. } => *name == self.to_string(),
                             _ => false,
@@ -344,7 +547,7 @@ macro_rules! generate_html_tags {
                     }
                 }
 
-                impl<Msg> PartialEq<[<$tag:camel>]> for BoxNode<Msg> {
+                impl<Msg> PartialEq<[<$tag:camel>]> for DynNode<Msg>  {
                     fn eq(&self, rhs: &[<$tag:camel>]) -> bool {
                         match self.node() {
                             NodeTree::Tag { name, .. } => *name == rhs.to_string(),
@@ -393,4 +596,5 @@ mod tests {
 
         assert_ne!(&H1, &node);
     }
+}
 }
