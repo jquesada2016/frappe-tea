@@ -7,13 +7,11 @@ extern crate educe;
 #[macro_use]
 extern crate static_assertions;
 
-use futures::lock::{Mutex, MutexGuard};
 use std::{
     collections::HashMap,
     fmt,
-    future::Future,
     lazy::SyncOnceCell,
-    sync::{atomic, Arc, Weak},
+    sync::{atomic, Arc, Mutex, MutexGuard, Weak},
 };
 #[cfg(target_arch = "wasm32")]
 use utils::is_browser;
@@ -38,9 +36,8 @@ pub trait Cmd<Msg> {
     async fn perform_cmd(self: Box<Self>) -> Option<Msg>;
 }
 
-#[async_trait]
 trait DispatchMsg<Msg> {
-    async fn dispatch_msg(self: Arc<Self>, msg: Msg);
+    fn dispatch_msg(self: Arc<Self>, msg: Msg);
 }
 
 #[async_trait]
@@ -58,21 +55,21 @@ pub trait Node<Msg> {
 
     fn set_ctx(&mut self, cx: Context<Msg>);
 
-    async fn children(&self) -> ChildrenRef<Msg>;
+    fn children(&self) -> ChildrenRef<Msg>;
 
-    async fn children_mut(&mut self) -> ChildrenMut<Msg>;
+    fn children_mut(&mut self) -> ChildrenMut<Msg>;
 
     #[track_caller]
-    async fn append_child(&mut self, child: DynNode<Msg>);
+    fn append_child(&mut self, child: DynNode<Msg>);
 
-    async fn clear_children(&mut self);
+    fn clear_children(&mut self);
 }
 
 assert_obj_safe!(Node<()>);
 
 #[async_trait]
 trait Runtime<Msg> {
-    async fn dispatch_msg(self: Arc<Self>, msg: Msg);
+    fn dispatch_msg(self: Arc<Self>, msg: Msg);
 
     async fn perform_cmd(self: Arc<Self>, cmd: DynCmd<Msg>);
 }
@@ -85,14 +82,13 @@ pub struct AppElement<M, UF, Msg>(Arc<AppEl<M, UF, Msg>>);
 
 assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
-impl<M, UF, Msg, Fut> AppElement<M, UF, Msg>
+impl<M, UF, Msg> AppElement<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Option<DynCmd<Msg>>> + Send,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    pub async fn new<MF, VF, VFut>(
+    pub fn new<MF, VF>(
         target: &str,
         initial_model: MF,
         update: UF,
@@ -100,10 +96,9 @@ where
     ) -> Self
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> VFut,
-        VFut: Future<Output = DynNode<Msg>>,
+        VF: FnOnce(&M, Context<Msg>) -> DynNode<Msg>,
     {
-        Self(AppEl::new(target, initial_model, update, view).await)
+        Self(AppEl::new(target, initial_model, update, view))
     }
 }
 
@@ -124,34 +119,31 @@ where
 {
 }
 
-#[async_trait]
-impl<M, UF, Msg, Fut> DispatchMsg<Msg> for AppEl<M, UF, Msg>
+impl<M, UF, Msg> DispatchMsg<Msg> for AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Option<DynCmd<Msg>>> + Send,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    async fn dispatch_msg(self: Arc<Self>, msg: Msg) {
-        Runtime::dispatch_msg(self, msg).await;
+    fn dispatch_msg(self: Arc<Self>, msg: Msg) {
+        Runtime::dispatch_msg(self, msg);
     }
 }
 
 #[async_trait]
-impl<M, UF, Msg, Fut> Runtime<Msg> for AppEl<M, UF, Msg>
+impl<M, UF, Msg> Runtime<Msg> for AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Option<DynCmd<Msg>>> + Send,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    async fn dispatch_msg(self: Arc<Self>, msg: Msg) {
-        let mut model_lock = self.model.lock().await;
+    fn dispatch_msg(self: Arc<Self>, msg: Msg) {
+        let mut model_lock = self.model.lock().unwrap();
 
         // Get the model
         let mut model = model_lock.take().expect("model to not be taken");
 
-        let cmd = (self.update)(&mut model, msg).await;
+        let cmd = (self.update)(&mut model, msg);
 
         // Return model
         *model_lock = Some(model);
@@ -170,7 +162,7 @@ where
         let msg = cmd.perform_cmd().await;
 
         if let Some(msg) = msg {
-            Runtime::dispatch_msg(self.clone(), msg).await;
+            Runtime::dispatch_msg(self.clone(), msg);
         }
 
         // Decrement pending cmds count
@@ -178,14 +170,13 @@ where
     }
 }
 
-impl<M, UF, Msg, Fut> AppEl<M, UF, Msg>
+impl<M, UF, Msg> AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Option<DynCmd<Msg>>> + Send,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    async fn new<MF, VF, VFut>(
+    fn new<MF, VF>(
         target: &str,
         initial_model: MF,
         update: UF,
@@ -193,8 +184,7 @@ where
     ) -> Arc<Self>
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> VFut,
-        VFut: Future<Output = DynNode<Msg>>,
+        VF: FnOnce(&M, Context<Msg>) -> DynNode<Msg>,
     {
         let (model, cmd) = initial_model();
 
@@ -209,14 +199,13 @@ where
             Arc::downgrade(&this) as Weak<dyn DispatchMsg<Msg> + Send + Sync>;
 
         let cx = Context {
-            msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
+            _msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
             ..Default::default()
         };
 
-        let children =
-            view(this.model.lock().await.as_ref().unwrap(), cx).await;
+        let children = view(this.model.lock().unwrap().as_ref().unwrap(), cx);
 
-        let root_node = render(target, children).await;
+        let root_node = render(target, children);
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -239,8 +228,8 @@ pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<DynNode<Msg>>>);
 #[derive(Clone, Educe)]
 #[educe(Default)]
 pub struct Context<Msg> {
-    id: Id,
-    msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
+    _id: Id,
+    _msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
 }
 
 /// Represents a topologically unique and stable ID in a node tree.
@@ -295,7 +284,7 @@ impl Id {
         self.3 = Some(custom_id);
     }
 
-    fn set_id(&mut self, parent_id: &Id, index: usize) {
+    fn _set_id(&mut self, parent_id: &Id, index: usize) {
         self._set_sum(parent_id.0 + parent_id.1 + parent_id.2);
 
         self._set_depth(parent_id.1 + 1);
@@ -596,15 +585,15 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
         self.cx = cx;
     }
 
-    async fn children(&self) -> ChildrenRef<Msg> {
-        ChildrenRef(self.children.lock().await)
+    fn children(&self) -> ChildrenRef<Msg> {
+        ChildrenRef(self.children.lock().unwrap())
     }
 
-    async fn children_mut(&mut self) -> ChildrenMut<Msg> {
-        ChildrenMut(self.children.lock().await)
+    fn children_mut(&mut self) -> ChildrenMut<Msg> {
+        ChildrenMut(self.children.lock().unwrap())
     }
 
-    async fn append_child(&mut self, child: DynNode<Msg>) {
+    fn append_child(&mut self, child: DynNode<Msg>) {
         // We only need to insert items into the DOM when we are running
         // in the browser
         // app
@@ -644,11 +633,11 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
             }
         }
 
-        self.children_mut().await.push(child);
+        self.children_mut().push(child);
     }
 
-    async fn clear_children(&mut self) {
-        self.children_mut().await.clear();
+    fn clear_children(&mut self) {
+        self.children_mut().clear();
     }
 }
 
@@ -670,7 +659,7 @@ unsafe impl<T> Sync for WasmValue<T> {}
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-async fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
+fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
         let target = gloo::utils::document()
@@ -685,7 +674,7 @@ async fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
         // Intern the target node
         let mut target = NodeTree::from_raw_node(target.unchecked_into());
 
-        target.append_child(child).await;
+        target.append_child(child);
 
         target
     } else {
@@ -694,29 +683,6 @@ async fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn render<Msg>(_target: &str, _child: DynNode<Msg>) -> NodeTree<Msg> {
+fn render<Msg>(_target: &str, _child: DynNode<Msg>) -> NodeTree<Msg> {
     todo!()
-}
-
-api_planning! {
-    for child in children {
-        child = child().await;
-
-
-    }
-
-    async fn view(model: &Model, cx: Context) -> DynNode<Msg> {
-        // 0-0-0
-        Fragment::new()
-                .cx(cx)
-                .child(|cx| async {
-                    div()
-                        .cx(cx)
-                        .child(|cx| async { h1().ctx(cx).into_node().await })
-                        .into_node()
-                        .await
-                })
-                .into_node()
-                .await
-    }
 }
