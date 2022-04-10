@@ -21,7 +21,8 @@ use wasm_bindgen::JsCast;
 
 #[macro_use]
 mod utils;
-// pub mod html;
+pub mod components;
+pub mod html;
 pub mod testing;
 
 pub type DynNode<Msg> = Box<dyn Node<Msg> + Send>;
@@ -40,12 +41,16 @@ trait DispatchMsg<Msg> {
     fn dispatch_msg(self: Arc<Self>, msg: Msg);
 }
 
-#[async_trait]
 pub trait IntoNode<Msg> {
-    async fn into_node(self) -> DynNode<Msg>;
+    fn into_node(self) -> DynNode<Msg>;
 }
 
-#[async_trait]
+impl<Msg> IntoNode<Msg> for DynNode<Msg> {
+    fn into_node(self) -> Self {
+        self
+    }
+}
+
 pub trait Node<Msg> {
     fn node(&self) -> &NodeKind;
 
@@ -53,7 +58,7 @@ pub trait Node<Msg> {
 
     fn cx(&self) -> &Context<Msg>;
 
-    fn set_ctx(&mut self, cx: Context<Msg>);
+    fn set_cx(&mut self, cx: Context<Msg>);
 
     fn children(&self) -> ChildrenRef<Msg>;
 
@@ -88,7 +93,7 @@ where
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    pub fn new<MF, VF>(
+    pub fn new<MF, VF, N>(
         target: &str,
         initial_model: MF,
         update: UF,
@@ -96,7 +101,8 @@ where
     ) -> Self
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> DynNode<Msg>,
+        VF: FnOnce(&M, Context<Msg>) -> N,
+        N: IntoNode<Msg>,
     {
         Self(AppEl::new(target, initial_model, update, view))
     }
@@ -176,7 +182,7 @@ where
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
     Msg: Send + 'static,
 {
-    fn new<MF, VF>(
+    fn new<MF, VF, N>(
         target: &str,
         initial_model: MF,
         update: UF,
@@ -184,7 +190,8 @@ where
     ) -> Arc<Self>
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> DynNode<Msg>,
+        VF: FnOnce(&M, Context<Msg>) -> N,
+        N: IntoNode<Msg>,
     {
         let (model, cmd) = initial_model();
 
@@ -203,9 +210,10 @@ where
             ..Default::default()
         };
 
-        let children = view(this.model.lock().unwrap().as_ref().unwrap(), cx);
+        let child =
+            view(this.model.lock().unwrap().as_ref().unwrap(), cx).into_node();
 
-        let root_node = render(target, children);
+        let root_node = render(target, child);
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -228,7 +236,7 @@ pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<DynNode<Msg>>>);
 #[derive(Clone, Educe)]
 #[educe(Default)]
 pub struct Context<Msg> {
-    _id: Id,
+    id: Id,
     _msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
 }
 
@@ -268,15 +276,15 @@ impl Id {
         self.3.as_deref()
     }
 
-    fn _set_sum(&mut self, sum: usize) {
+    fn set_sum(&mut self, sum: usize) {
         self.0 += sum;
     }
 
-    fn _set_depth(&mut self, depth: usize) {
+    fn set_depth(&mut self, depth: usize) {
         self.1 += depth;
     }
 
-    fn _set_index(&mut self, index: usize) {
+    fn set_index(&mut self, index: usize) {
         self.2 += index;
     }
 
@@ -284,12 +292,12 @@ impl Id {
         self.3 = Some(custom_id);
     }
 
-    fn _set_id(&mut self, parent_id: &Id, index: usize) {
-        self._set_sum(parent_id.0 + parent_id.1 + parent_id.2);
+    fn set_id(&mut self, parent_id: &Id, index: usize) {
+        self.set_sum(parent_id.0 + parent_id.1 + parent_id.2);
 
-        self._set_depth(parent_id.1 + 1);
+        self.set_depth(parent_id.1 + 1);
 
-        self._set_index(index);
+        self.set_index(index);
     }
 }
 
@@ -484,12 +492,11 @@ impl<Msg> fmt::Debug for NodeTree<Msg> {
     }
 }
 
-#[async_trait]
 impl<Msg> IntoNode<Msg> for NodeTree<Msg>
 where
     Msg: 'static,
 {
-    async fn into_node(self) -> DynNode<Msg> {
+    fn into_node(self) -> DynNode<Msg> {
         Box::new(self)
     }
 }
@@ -567,7 +574,6 @@ impl<Msg> Drop for NodeTree<Msg> {
     }
 }
 
-#[async_trait]
 impl<Msg> Node<Msg> for NodeTree<Msg> {
     fn node(&self) -> &NodeKind {
         &self.node
@@ -581,7 +587,7 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
         &self.cx
     }
 
-    fn set_ctx(&mut self, cx: Context<Msg>) {
+    fn set_cx(&mut self, cx: Context<Msg>) {
         self.cx = cx;
     }
 

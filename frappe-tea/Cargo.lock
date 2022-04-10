@@ -361,7 +361,6 @@ dependencies = [
  "ntest",
  "paste",
  "proptest",
- "rayon",
  "serde",
  "static_assertions",
  "tokio",

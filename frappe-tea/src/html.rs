@@ -1,10 +1,10 @@
-use crate::{ChildrenMut, ChildrenRef, IntoNode, Node, NodeKind};
-use futures::lock::Mutex;
+use crate::{
+    ChildrenMut, ChildrenRef, Context, DynNode, IntoNode, Node, NodeKind,
+    NodeTree,
+};
 use paste::paste;
 use sealed::*;
-use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
-
-use crate::{Context, DynNode, NodeTree};
+use std::{fmt, marker::PhantomData};
 
 mod sealed {
     pub trait Sealed {}
@@ -16,21 +16,40 @@ mod sealed {
 //                                Traits
 // =============================================================================
 
-pub trait Html: Sealed {}
+pub trait Html<Msg>: Sealed + Node<Msg>
+where
+    Msg: 'static,
+{
+    fn text(&mut self, text: impl ToString) -> &mut Self {
+        let text = text.to_string();
 
-pub trait HtmlFutureExt<Msg>: Html + Future {
-    fn text<'a>(&mut self, text: impl ToString) -> &mut Self {
-        todo!()
+        let text_node = NodeTree::new_text(&text).into_node();
+
+        self.append_child(text_node);
+
+        self
     }
 
-    fn child<'a, Fut>(
+    fn child<N>(
         &mut self,
-        child_fn: impl FnOnce(Context<Msg>) -> Fut,
+        child_fn: impl FnOnce(Context<Msg>) -> N,
     ) -> &mut Self
     where
-        Fut: Future<Output = DynNode<Msg>> + Send,
+        N: IntoNode<Msg>,
     {
-        todo!()
+        let cx = self.cx();
+
+        let mut child_cx = Context::default();
+
+        let index = self.children().len();
+
+        child_cx.id.set_id(&cx.id, index);
+
+        let child = child_fn(child_cx).into_node();
+
+        self.append_child(child);
+
+        self
     }
 }
 
@@ -43,17 +62,42 @@ pub struct HtmlElement<State, E, Msg> {
     /// This field is `Option<_>` because it gaurds agains calling [IntoNode::into_node`]
     /// more than once.
     node: Option<NodeTree<Msg>>,
-    state: State,
-    futures: Vec<Box<dyn Future<Output = ()> + Send + Sync>>,
+    _state: State,
 }
 
-impl<E, Msg> Html for HtmlElement<AppliedCtx, E, Msg> where E: Sealed {}
-
-#[async_trait]
-impl<E, Msg> Node<Msg> for HtmlElement<AppliedCtx, E, Msg>
+impl<E, Msg> Html<Msg> for HtmlElement<AppliedCtx, E, Msg>
 where
+    Msg: 'static,
+    E: Sealed + 'static,
+{
+}
+
+impl<E, Msg> IntoNode<Msg> for HtmlElement<AppliedCtx, E, Msg>
+where
+    Msg: 'static,
     E: Send + Sync + 'static,
 {
+    fn into_node(self) -> DynNode<Msg> {
+        self.node
+            .expect("called `into_node()` more than once")
+            .into_node()
+    }
+}
+
+impl<E, Msg> IntoNode<Msg> for &mut HtmlElement<AppliedCtx, E, Msg>
+where
+    Msg: 'static,
+    E: Send + Sync + 'static,
+{
+    fn into_node(self) -> DynNode<Msg> {
+        self.node
+            .take()
+            .expect("called `into_node()` more than once")
+            .into_node()
+    }
+}
+
+impl<E, Msg> Node<Msg> for HtmlElement<AppliedCtx, E, Msg> {
     fn node(&self) -> &NodeKind {
         self.node
             .as_ref()
@@ -81,54 +125,50 @@ where
             .cx()
     }
 
-    fn set_ctx(&mut self, cx: Context<Msg>) {
+    fn set_cx(&mut self, cx: Context<Msg>) {
         self.node
             .as_mut()
             .expect(
                 "attempted to use node interafce after calling `.into_node()`",
             )
-            .set_ctx(cx)
+            .set_cx(cx)
     }
 
-    async fn children(&self) -> ChildrenRef<Msg> {
+    fn children(&self) -> ChildrenRef<Msg> {
         self.node
             .as_ref()
             .expect(
                 "attempted to use node interafce after calling `.into_node()`",
             )
             .children()
-            .await
     }
 
-    async fn children_mut(&mut self) -> ChildrenMut<Msg> {
+    fn children_mut(&mut self) -> ChildrenMut<Msg> {
         self.node
             .as_mut()
             .expect(
                 "attempted to use node interafce after calling `.into_node()`",
             )
             .children_mut()
-            .await
     }
 
     #[track_caller]
-    async fn append_child(&mut self, child: DynNode<Msg>) {
+    fn append_child(&mut self, child: DynNode<Msg>) {
         self.node
             .as_mut()
             .expect(
                 "attempted to use node interafce after calling `.into_node()`",
             )
             .append_child(child)
-            .await
     }
 
-    async fn clear_children(&mut self) {
+    fn clear_children(&mut self) {
         self.node
             .as_mut()
             .expect(
                 "attempted to use node interafce after calling `.into_node()`",
             )
             .clear_children()
-            .await
     }
 }
 
@@ -145,8 +185,7 @@ where
         Self {
             _element: PhantomData::default(),
             node: Some(NodeTree::new_tag(&element.to_string())),
-            state: MissingCtx,
-            futures: vec![],
+            _state: MissingCtx,
         }
     }
 
@@ -156,25 +195,20 @@ where
             _element: PhantomData::default(),
             node: Some(NodeTree::from_raw_node(node)),
             state: MissingCtx,
-            futures: vec![],
         }
     }
 
     pub fn cx(self, cx: Context<Msg>) -> HtmlElement<AppliedCtx, E, Msg> {
         let Self {
-            _element,
-            mut node,
-            futures,
-            ..
+            _element, mut node, ..
         } = self;
 
-        node.as_mut().unwrap().set_ctx(cx);
+        node.as_mut().unwrap().set_cx(cx);
 
         HtmlElement {
             _element,
             node,
-            state: AppliedCtx,
-            futures,
+            _state: AppliedCtx,
         }
     }
 }

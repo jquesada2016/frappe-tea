@@ -1,16 +1,12 @@
-mod dyn_child;
-mod if_;
+// mod dyn_child;
+// mod if_;
 
-use crate::{BoxNode, IntoNode, Node, NodeTree};
-pub use dyn_child::*;
-pub use if_::*;
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    marker::PhantomData,
-    ops,
-    rc::Rc,
-    sync::{Arc, Mutex},
+use crate::{
+    ChildrenMut, ChildrenRef, Context, DynNode, Node, NodeKind, NodeTree,
 };
+// pub use dyn_child::*;
+// pub use if_::*;
+use std::marker::PhantomData;
 
 pub trait Comp {
     type Props;
@@ -25,7 +21,7 @@ where
     C: Comp,
 {
     _component: PhantomData<C>,
-    props: C::Props,
+    _props: C::Props,
     node: NodeTree<Msg>,
 }
 
@@ -33,33 +29,35 @@ impl<C, Msg> Node<Msg> for Component<C, Msg>
 where
     C: Comp,
 {
-    fn node(&self) -> &NodeTree<Msg> {
-        &self.node
+    fn cx(&self) -> &Context<Msg> {
+        self.node.cx()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn children_rc(&self) -> Arc<Mutex<Vec<BoxNode<Msg>>>> {
-        self.node.children_rc()
+    fn set_cx(&mut self, cx: Context<Msg>) {
+        self.node.set_cx(cx);
     }
 
-    #[cfg(target_arch = "wasm32")]
-    fn children_rc(&self) -> Rc<RefCell<Vec<BoxNode<Msg>>>> {
-        self.node.children_rc()
+    fn node(&self) -> &NodeKind {
+        self.node.node()
     }
 
-    fn children<'a>(
-        &'a self,
-    ) -> Box<dyn ops::Deref<Target = Vec<BoxNode<Msg>>> + 'a> {
+    fn node_mut(&mut self) -> &mut NodeKind {
+        self.node.node_mut()
+    }
+
+    fn children(&self) -> ChildrenRef<Msg> {
         self.node.children()
     }
 
-    fn children_mut(
-        &mut self,
-    ) -> Box<dyn ops::DerefMut<Target = Vec<BoxNode<Msg>>>> {
+    fn children_mut(&mut self) -> ChildrenMut<Msg> {
         self.node.children_mut()
     }
 
-    fn append_child(&mut self, child: BoxNode<Msg>) {
+    fn append_child(&mut self, child: DynNode<Msg>) {
         self.node.append_child(child);
+    }
+
+    fn clear_children(&mut self) {
+        self.node.clear_children();
     }
 }
