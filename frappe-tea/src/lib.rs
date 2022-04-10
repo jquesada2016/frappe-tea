@@ -90,7 +90,7 @@ assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 impl<M, UF, Msg> AppElement<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
     pub fn new<MF, VF, N>(
@@ -117,10 +117,13 @@ struct AppEl<M, UF, Msg> {
 
 assert_impl_all!(AppEl<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
+// Safety:
+// This is safe because access to the update fn is gated by a mutex lock
+// on model.
 unsafe impl<M, UF, Msg> Sync for AppEl<M, UF, Msg>
 where
     M: 'static,
-    UF: Send + Sync,
+    UF: Send + 'static,
     Msg: 'static,
 {
 }
@@ -128,7 +131,7 @@ where
 impl<M, UF, Msg> DispatchMsg<Msg> for AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
     fn dispatch_msg(self: Arc<Self>, msg: Msg) {
@@ -140,7 +143,7 @@ where
 impl<M, UF, Msg> Runtime<Msg> for AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
     fn dispatch_msg(self: Arc<Self>, msg: Msg) {
@@ -179,7 +182,7 @@ where
 impl<M, UF, Msg> AppEl<M, UF, Msg>
 where
     M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + Sync + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
     fn new<MF, VF, N>(
