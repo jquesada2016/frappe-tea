@@ -24,7 +24,7 @@ pub trait Observable {
 
         // We just need to sub/unsub
         let unsub = self.subscribe(Box::new(move |v| {
-            let mut f = f.take().unwrap();
+            let f = f.take().unwrap();
 
             f(&v);
         }));
@@ -147,6 +147,7 @@ impl<T> ops::Deref for Ref<T> {
 
 struct SharedState<T> {
     value: T,
+    #[allow(clippy::type_complexity)]
     callbacks: Vec<Option<Box<dyn FnMut(Ref<T>)>>>,
 }
 
