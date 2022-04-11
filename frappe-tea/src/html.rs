@@ -34,34 +34,29 @@ where
     E: Sealed + 'static,
 {
     pub fn text(&mut self, text: impl ToString) -> &mut Self {
+        let this = self.node.as_mut().expect(USE_AFTER_INTO_NODE);
+
         let text = text.to_string();
 
         let text_node = NodeTree::new_text(&text).into_node();
 
-        self.node
-            .as_mut()
-            .expect(USE_AFTER_INTO_NODE)
-            .append_child(text_node);
+        text_node.children.set_cx(this.children.cx());
+
+        this.append_child(text_node);
 
         self
     }
 
     pub fn child<N>(
         &mut self,
-        child_fn: impl FnOnce(Context<Msg>) -> N,
+        child_fn: impl FnOnce(&Context<Msg>) -> N,
     ) -> &mut Self
     where
         N: IntoNode<Msg>,
     {
-        let cx = &self.node.as_ref().expect(USE_AFTER_INTO_NODE).cx;
+        let cx = self.node.as_ref().expect(USE_AFTER_INTO_NODE).children.cx();
 
-        let mut child_cx = Context::default();
-
-        let index = self.node.as_ref().unwrap().children().len();
-
-        child_cx.id.set_id(&cx.id, index);
-
-        let child = child_fn(child_cx).into_node();
+        let child = child_fn(cx).into_node();
 
         self.node.as_mut().unwrap().append_child(child);
 
@@ -120,12 +115,12 @@ where
         }
     }
 
-    pub fn cx(self, cx: Context<Msg>) -> HtmlElement<AppliedCtx, E, Msg> {
+    pub fn cx(self, cx: &Context<Msg>) -> HtmlElement<AppliedCtx, E, Msg> {
         let Self {
             _element, mut node, ..
         } = self;
 
-        node.as_mut().unwrap().cx = cx;
+        node.as_mut().unwrap().children.set_cx(cx);
 
         HtmlElement {
             _element,

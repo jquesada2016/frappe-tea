@@ -5,6 +5,9 @@ extern crate async_trait;
 #[macro_use]
 extern crate educe;
 #[macro_use]
+#[allow(unused_imports)]
+extern crate log;
+#[macro_use]
 extern crate static_assertions;
 
 #[macro_use]
@@ -84,7 +87,7 @@ where
     ) -> Self
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> N,
+        VF: FnOnce(&M, &Context<Msg>) -> N,
         N: IntoNode<Msg>,
     {
         Self(AppEl::new(target, initial_model, update, view))
@@ -176,7 +179,7 @@ where
     ) -> Arc<Self>
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, Context<Msg>) -> N,
+        VF: FnOnce(&M, &Context<Msg>) -> N,
         N: IntoNode<Msg>,
     {
         let (model, cmd) = initial_model();
@@ -192,14 +195,14 @@ where
             Arc::downgrade(&this) as Weak<dyn DispatchMsg<Msg> + Send + Sync>;
 
         let cx = Context {
-            _msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
+            msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
             ..Default::default()
         };
 
         let child =
-            view(this.model.lock().unwrap().as_ref().unwrap(), cx).into_node();
+            view(this.model.lock().unwrap().as_ref().unwrap(), &cx).into_node();
 
-        let root_node = render(target, child);
+        let root_node = render(target, child, cx);
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -212,6 +215,86 @@ where
 }
 
 #[derive(Educe)]
+#[educe(Default)]
+struct Children<Msg> {
+    cx: SyncOnceCell<Context<Msg>>,
+    children: Mutex<Vec<NodeTree<Msg>>>,
+}
+
+impl<Msg> Children<Msg> {
+    #[track_caller]
+    fn cx(&self) -> &Context<Msg> {
+        self.cx
+            .get()
+            .expect("attempted to get context before being set")
+    }
+
+    #[track_caller]
+    fn set_cx(&self, parent_cx: &Context<Msg>) {
+        let mut next_index_lock = parent_cx.next_index.lock().unwrap();
+
+        let index = *next_index_lock;
+        *next_index_lock += 1;
+
+        drop(next_index_lock);
+
+        let cx = Context::from_parent_cx(parent_cx, index);
+
+        self.cx
+            .set(cx)
+            .ok()
+            .expect("cannot set context more than once");
+    }
+
+    fn append(&self, this: &NodeKind, child: NodeTree<Msg>) {
+        // We only need to insert items into the DOM when we are running
+        // in the browser
+        // app
+        #[cfg(target_arch = "wasm32")]
+        if is_browser() {
+            match this {
+                // We don't have to insert anything here, because there is no
+                // actual node for us to insert into. Components are flat,
+                // i.e., they do not have an inherent parent, and therefore
+                // require a `tag` parent to exist. We will insert it later,
+                // once we have a parent which is a `tag` variant
+                NodeKind::Component { .. } => { /* do nothing */ }
+                NodeKind::Tag {
+                    node: parent_node, ..
+                } => match &child.node {
+                    // Since components don't have an actual tag, we
+                    // need to recursively insert all component children
+                    NodeKind::Component { .. } => todo!(),
+                    NodeKind::Tag {
+                        node: child_node, ..
+                    } => {
+                        parent_node
+                            .as_ref()
+                            .unwrap()
+                            .append_child(child_node.as_ref().unwrap())
+                            .unwrap();
+                    }
+                    NodeKind::Text(_, child_text) => {
+                        parent_node
+                            .as_ref()
+                            .unwrap()
+                            .append_child(child_text.as_ref().unwrap())
+                            .unwrap();
+                    }
+                },
+                NodeKind::Text(..) => panic!("text nodes cannot have children"),
+            }
+        }
+
+        self.children.lock().unwrap().push(child);
+    }
+
+    fn clear(&self) {
+        self.children.lock().unwrap().clear();
+    }
+}
+
+#[derive(Educe)]
 #[educe(Deref)]
 pub struct ChildrenRef<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
 
@@ -219,15 +302,29 @@ pub struct ChildrenRef<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
 #[educe(Deref, DerefMut)]
 pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
 
-#[derive(Clone, Educe)]
+#[derive(Educe)]
 #[educe(Default)]
 pub struct Context<Msg> {
     id: Id,
-    _msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
+    msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
+    next_index: Mutex<usize>,
+}
+
+impl<Msg> Context<Msg> {
+    fn from_parent_cx(parent_cx: &Context<Msg>, index: usize) -> Self {
+        let mut this = Context {
+            msg_dispatcher: parent_cx.msg_dispatcher.clone(),
+            ..Default::default()
+        };
+
+        this.id.set_id(&parent_cx.id, index);
+
+        this
+    }
 }
 
 /// Represents a topologically unique and stable ID in a node tree.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, Eq)]
 struct Id(usize, usize, usize, Option<String>);
 
 impl fmt::Display for Id {
@@ -242,6 +339,15 @@ impl fmt::Display for Id {
                 self.index()
             ))
         }
+    }
+}
+
+/// Does not check to see if the custom id's are eq.
+impl PartialEq for Id {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.sum() == rhs.sum()
+            && self.depth() == rhs.depth()
+            && self.index() == rhs.index()
     }
 }
 
@@ -339,6 +445,18 @@ pub enum NodeKind {
 }
 
 assert_impl_all!(NodeKind: Send);
+
+impl fmt::Debug for NodeKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Component { name, .. } => {
+                f.debug_tuple("Component").field(name).finish()
+            }
+            Self::Tag { name, .. } => f.debug_tuple("Tag").field(name).finish(),
+            Self::Text(text, ..) => f.debug_tuple("Text").field(text).finish(),
+        }
+    }
+}
 
 impl NodeKind {
     fn new_component(name: &str) -> Self {
@@ -465,14 +583,22 @@ impl NodeKind {
 }
 
 pub struct NodeTree<Msg> {
-    cx: Context<Msg>,
     node: NodeKind,
-    children: Mutex<Vec<NodeTree<Msg>>>,
+    children: Arc<Children<Msg>>,
 }
 
 assert_impl_all!(NodeTree<()>: Send);
 
 impl<Msg> fmt::Debug for NodeTree<Msg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeTree")
+            .field("id", &self.children.cx().id)
+            .field("node", &self.node)
+            .field("children", &*self.children.children.lock().unwrap())
+            .finish()
+    }
+}
+impl<Msg> fmt::Display for NodeTree<Msg> {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         todo!()
     }
@@ -490,90 +616,39 @@ where
 impl<Msg> NodeTree<Msg> {
     pub fn new_component(name: &str) -> Self {
         Self {
-            cx: Context::default(),
             node: NodeKind::new_component(name),
-            children: Mutex::new(vec![]),
+            children: Arc::new(Children::default()),
         }
     }
 
     pub fn new_tag(tag_name: &str) -> Self {
         Self {
-            cx: Context::default(),
             node: NodeKind::new_tag(tag_name),
-            children: Mutex::new(vec![]),
+            children: Arc::new(Children::default()),
         }
     }
 
     pub fn new_text(text: &str) -> Self {
         Self {
-            cx: Context::default(),
             node: NodeKind::new_text(text),
-            children: Mutex::new(vec![]),
+            children: Arc::new(Children::default()),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
     pub fn from_raw_node(node: web_sys::Node) -> Self {
         Self {
-            cx: Context::default(),
             node: NodeKind::from_raw_node(node),
-            children: Mutex::new(vec![]),
+            children: Arc::new(Children::default()),
         }
-    }
-
-    pub fn children(&self) -> ChildrenRef<Msg> {
-        ChildrenRef(self.children.lock().unwrap())
-    }
-
-    pub fn children_mut(&mut self) -> ChildrenMut<Msg> {
-        ChildrenMut(self.children.lock().unwrap())
     }
 
     pub fn append_child(&mut self, child: NodeTree<Msg>) {
-        // We only need to insert items into the DOM when we are running
-        // in the browser
-        // app
-        #[cfg(target_arch = "wasm32")]
-        if is_browser() {
-            match &self.node {
-                // We don't have to insert anything here, because there is no
-                // actual node for us to insert into. Components are flat,
-                // i.e., they do not have an inherent parent, and therefore
-                // require a `tag` parent to exist. We will insert it later,
-                // once we have a parent which is a `tag` variant
-                NodeKind::Component { .. } => { /* do nothing */ }
-                NodeKind::Tag {
-                    node: parent_node, ..
-                } => match &child.node() {
-                    // Since components don't have an actual tag, we
-                    // need to recursively insert all component children
-                    NodeKind::Component { .. } => todo!(),
-                    NodeKind::Tag {
-                        node: child_node, ..
-                    } => {
-                        parent_node
-                            .as_ref()
-                            .unwrap()
-                            .append_child(child_node.as_ref().unwrap())
-                            .unwrap();
-                    }
-                    NodeKind::Text(_, child_text) => {
-                        parent_node
-                            .as_ref()
-                            .unwrap()
-                            .append_child(child_text.as_ref().unwrap())
-                            .unwrap();
-                    }
-                },
-                NodeKind::Text(..) => panic!("text nodes cannot have children"),
-            }
-        }
-
-        self.children_mut().push(child);
+        self.children.append(&self.node, child);
     }
 
     pub fn clear_children(&mut self) {
-        self.children_mut().clear();
+        self.children.clear();
     }
 }
 
@@ -582,33 +657,45 @@ impl<Msg> NodeTree<Msg> {
 impl<Msg> Drop for NodeTree<Msg> {
     // TODO: Batch the drops and synchronize with `requestAnimationFrame`
     fn drop(&mut self) {
-        match &self.node {
-            NodeKind::Component {
-                opening_marker,
-                state_marker,
-                closing_marker,
-                ..
-            } => {
-                if let Some(opening_marker) = opening_marker {
-                    opening_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
+        // We only want to drop if we aren't the root node, since the
+        // root node was provided externally, and that would just be rude
+        if let Some(cx) = self.children.cx.get() {
+            if cx.id != Id(0, 0, 0, None) {
+                match &self.node {
+                    NodeKind::Component {
+                        opening_marker,
+                        state_marker,
+                        closing_marker,
+                        ..
+                    } => {
+                        if let Some(opening_marker) = opening_marker {
+                            opening_marker
+                                .unchecked_ref::<web_sys::Element>()
+                                .remove();
+                        }
 
-                if let Some(state_marker) = state_marker {
-                    state_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
+                        if let Some(state_marker) = state_marker {
+                            state_marker
+                                .unchecked_ref::<web_sys::Element>()
+                                .remove();
+                        }
 
-                if let Some(closing_marker) = closing_marker {
-                    closing_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
-            }
-            NodeKind::Tag { node, .. } => {
-                if let Some(node) = node {
-                    node.unchecked_ref::<web_sys::Element>().remove()
-                }
-            }
-            NodeKind::Text(_, text) => {
-                if let Some(text) = text {
-                    text.unchecked_ref::<web_sys::Element>().remove();
+                        if let Some(closing_marker) = closing_marker {
+                            closing_marker
+                                .unchecked_ref::<web_sys::Element>()
+                                .remove();
+                        }
+                    }
+                    NodeKind::Tag { node, .. } => {
+                        if let Some(node) = node {
+                            node.unchecked_ref::<web_sys::Element>().remove()
+                        }
+                    }
+                    NodeKind::Text(_, text) => {
+                        if let Some(text) = text {
+                            text.unchecked_ref::<web_sys::Element>().remove();
+                        }
+                    }
                 }
             }
         }
@@ -633,7 +720,11 @@ unsafe impl<T> Sync for WasmValue<T> {}
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-fn render<Msg>(target: &str, child: NodeTree<Msg>) -> NodeTree<Msg> {
+fn render<Msg>(
+    target: &str,
+    child: NodeTree<Msg>,
+    cx: Context<Msg>,
+) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
         let target = gloo::utils::document()
@@ -647,6 +738,10 @@ fn render<Msg>(target: &str, child: NodeTree<Msg>) -> NodeTree<Msg> {
 
         // Intern the target node
         let mut target = NodeTree::from_raw_node(target.unchecked_into());
+
+        // We need to manually set the cx so that the root has id
+        // 0-0-0
+        target.children.cx.set(cx).ok().unwrap();
 
         target.append_child(child);
 
