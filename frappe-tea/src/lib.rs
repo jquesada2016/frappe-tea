@@ -7,6 +7,13 @@ extern crate educe;
 #[macro_use]
 extern crate static_assertions;
 
+#[macro_use]
+mod utils;
+pub mod components;
+pub mod html;
+pub mod reactive;
+pub mod testing;
+
 use std::{
     collections::HashMap,
     fmt,
@@ -19,14 +26,17 @@ use utils::spawn;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
-#[macro_use]
-mod utils;
-pub mod components;
-pub mod html;
-pub mod testing;
-
 pub type DynNode<Msg> = Box<dyn Node<Msg> + Send>;
 pub type DynCmd<Msg> = Box<dyn Cmd<Msg> + Send>;
+
+// =============================================================================
+//                              Modules
+// =============================================================================
+
+pub mod prelude {
+    pub use super::*;
+    pub use reactive::*;
+}
 
 // =============================================================================
 //                              Traits

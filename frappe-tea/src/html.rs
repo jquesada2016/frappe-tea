@@ -194,7 +194,7 @@ where
         Self {
             _element: PhantomData::default(),
             node: Some(NodeTree::from_raw_node(node)),
-            state: MissingCtx,
+            _state: MissingCtx,
         }
     }
 

@@ -1,21 +1,18 @@
-use futures::Stream;
-
-use crate::{BoxNode, IntoNode};
+use crate::{DynNode, IntoNode};
 
 pub struct DynChild;
 
 impl DynChild {
-    pub fn new<Msg, const N: usize>(
-        bool_stream: impl Stream<Item = bool>,
-        children_fn: impl FnMut() -> [BoxNode<Msg>; N],
+    pub fn new<Msg>(
+        bool_stream: (),
+        children_fn: impl FnMut() -> DynNode<Msg>,
     ) -> Self {
         todo!()
     }
 }
 
-#[async_trait(?Send)]
 impl<Msg> IntoNode<Msg> for DynChild {
-    async fn into_node(self) -> BoxNode<Msg> {
+    fn into_node(self) -> DynNode<Msg> {
         todo!()
     }
 }
