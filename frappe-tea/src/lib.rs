@@ -9,7 +9,7 @@ extern crate static_assertions;
 
 #[macro_use]
 mod utils;
-pub mod components;
+// pub mod components;
 pub mod html;
 pub mod reactive;
 pub mod testing;
@@ -26,7 +26,6 @@ use utils::spawn;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
-pub type DynNode<Msg> = Box<dyn Node<Msg> + Send>;
 pub type DynCmd<Msg> = Box<dyn Cmd<Msg> + Send>;
 
 // =============================================================================
@@ -35,6 +34,7 @@ pub type DynCmd<Msg> = Box<dyn Cmd<Msg> + Send>;
 
 pub mod prelude {
     pub use super::*;
+    // pub use components::*;
     pub use reactive::*;
 }
 
@@ -52,35 +52,8 @@ trait DispatchMsg<Msg> {
 }
 
 pub trait IntoNode<Msg> {
-    fn into_node(self) -> DynNode<Msg>;
+    fn into_node(self) -> NodeTree<Msg>;
 }
-
-impl<Msg> IntoNode<Msg> for DynNode<Msg> {
-    fn into_node(self) -> Self {
-        self
-    }
-}
-
-pub trait Node<Msg> {
-    fn node(&self) -> &NodeKind;
-
-    fn node_mut(&mut self) -> &mut NodeKind;
-
-    fn cx(&self) -> &Context<Msg>;
-
-    fn set_cx(&mut self, cx: Context<Msg>);
-
-    fn children(&self) -> ChildrenRef<Msg>;
-
-    fn children_mut(&mut self) -> ChildrenMut<Msg>;
-
-    #[track_caller]
-    fn append_child(&mut self, child: DynNode<Msg>);
-
-    fn clear_children(&mut self);
-}
-
-assert_obj_safe!(Node<()>);
 
 #[async_trait]
 trait Runtime<Msg> {
@@ -240,11 +213,11 @@ where
 
 #[derive(Educe)]
 #[educe(Deref)]
-pub struct ChildrenRef<'a, Msg>(MutexGuard<'a, Vec<DynNode<Msg>>>);
+pub struct ChildrenRef<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
 
 #[derive(Educe)]
 #[educe(Deref, DerefMut)]
-pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<DynNode<Msg>>>);
+pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
 
 #[derive(Clone, Educe)]
 #[educe(Default)]
@@ -494,7 +467,7 @@ impl NodeKind {
 pub struct NodeTree<Msg> {
     cx: Context<Msg>,
     node: NodeKind,
-    children: Mutex<Vec<DynNode<Msg>>>,
+    children: Mutex<Vec<NodeTree<Msg>>>,
 }
 
 assert_impl_all!(NodeTree<()>: Send);
@@ -509,8 +482,8 @@ impl<Msg> IntoNode<Msg> for NodeTree<Msg>
 where
     Msg: 'static,
 {
-    fn into_node(self) -> DynNode<Msg> {
-        Box::new(self)
+    fn into_node(self) -> NodeTree<Msg> {
+        self
     }
 }
 
@@ -547,72 +520,16 @@ impl<Msg> NodeTree<Msg> {
             children: Mutex::new(vec![]),
         }
     }
-}
 
-/// Removes the node from the DOM.
-#[cfg(target_arch = "wasm32")]
-impl<Msg> Drop for NodeTree<Msg> {
-    // TODO: Batch the drops and synchronize with `requestAnimationFrame`
-    fn drop(&mut self) {
-        match &self.node {
-            NodeKind::Component {
-                opening_marker,
-                state_marker,
-                closing_marker,
-                ..
-            } => {
-                if let Some(opening_marker) = opening_marker {
-                    opening_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
-
-                if let Some(state_marker) = state_marker {
-                    state_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
-
-                if let Some(closing_marker) = closing_marker {
-                    closing_marker.unchecked_ref::<web_sys::Element>().remove();
-                }
-            }
-            NodeKind::Tag { node, .. } => {
-                if let Some(node) = node {
-                    node.unchecked_ref::<web_sys::Element>().remove()
-                }
-            }
-            NodeKind::Text(_, text) => {
-                if let Some(text) = text {
-                    text.unchecked_ref::<web_sys::Element>().remove();
-                }
-            }
-        }
-    }
-}
-
-impl<Msg> Node<Msg> for NodeTree<Msg> {
-    fn node(&self) -> &NodeKind {
-        &self.node
-    }
-
-    fn node_mut(&mut self) -> &mut NodeKind {
-        &mut self.node
-    }
-
-    fn cx(&self) -> &Context<Msg> {
-        &self.cx
-    }
-
-    fn set_cx(&mut self, cx: Context<Msg>) {
-        self.cx = cx;
-    }
-
-    fn children(&self) -> ChildrenRef<Msg> {
+    pub fn children(&self) -> ChildrenRef<Msg> {
         ChildrenRef(self.children.lock().unwrap())
     }
 
-    fn children_mut(&mut self) -> ChildrenMut<Msg> {
+    pub fn children_mut(&mut self) -> ChildrenMut<Msg> {
         ChildrenMut(self.children.lock().unwrap())
     }
 
-    fn append_child(&mut self, child: DynNode<Msg>) {
+    pub fn append_child(&mut self, child: NodeTree<Msg>) {
         // We only need to insert items into the DOM when we are running
         // in the browser
         // app
@@ -655,8 +572,46 @@ impl<Msg> Node<Msg> for NodeTree<Msg> {
         self.children_mut().push(child);
     }
 
-    fn clear_children(&mut self) {
+    pub fn clear_children(&mut self) {
         self.children_mut().clear();
+    }
+}
+
+/// Removes the node from the DOM.
+#[cfg(target_arch = "wasm32")]
+impl<Msg> Drop for NodeTree<Msg> {
+    // TODO: Batch the drops and synchronize with `requestAnimationFrame`
+    fn drop(&mut self) {
+        match &self.node {
+            NodeKind::Component {
+                opening_marker,
+                state_marker,
+                closing_marker,
+                ..
+            } => {
+                if let Some(opening_marker) = opening_marker {
+                    opening_marker.unchecked_ref::<web_sys::Element>().remove();
+                }
+
+                if let Some(state_marker) = state_marker {
+                    state_marker.unchecked_ref::<web_sys::Element>().remove();
+                }
+
+                if let Some(closing_marker) = closing_marker {
+                    closing_marker.unchecked_ref::<web_sys::Element>().remove();
+                }
+            }
+            NodeKind::Tag { node, .. } => {
+                if let Some(node) = node {
+                    node.unchecked_ref::<web_sys::Element>().remove()
+                }
+            }
+            NodeKind::Text(_, text) => {
+                if let Some(text) = text {
+                    text.unchecked_ref::<web_sys::Element>().remove();
+                }
+            }
+        }
     }
 }
 
@@ -678,7 +633,7 @@ unsafe impl<T> Sync for WasmValue<T> {}
 // =============================================================================
 
 #[cfg(target_arch = "wasm32")]
-fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
+fn render<Msg>(target: &str, child: NodeTree<Msg>) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
         let target = gloo::utils::document()
@@ -702,6 +657,6 @@ fn render<Msg>(target: &str, child: DynNode<Msg>) -> NodeTree<Msg> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render<Msg>(_target: &str, _child: DynNode<Msg>) -> NodeTree<Msg> {
+fn render<Msg>(_target: &str, _child: NodeTree<Msg>) -> NodeTree<Msg> {
     todo!()
 }

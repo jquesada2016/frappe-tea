@@ -1,7 +1,4 @@
-use crate::{
-    ChildrenMut, ChildrenRef, Context, DynNode, IntoNode, Node, NodeKind,
-    NodeTree,
-};
+use crate::{Context, IntoNode, NodeKind, NodeTree};
 use paste::paste;
 use sealed::*;
 use std::{fmt, marker::PhantomData};
@@ -13,45 +10,11 @@ mod sealed {
 }
 
 // =============================================================================
-//                                Traits
+//                               Constants
 // =============================================================================
 
-pub trait Html<Msg>: Sealed + Node<Msg>
-where
-    Msg: 'static,
-{
-    fn text(&mut self, text: impl ToString) -> &mut Self {
-        let text = text.to_string();
-
-        let text_node = NodeTree::new_text(&text).into_node();
-
-        self.append_child(text_node);
-
-        self
-    }
-
-    fn child<N>(
-        &mut self,
-        child_fn: impl FnOnce(Context<Msg>) -> N,
-    ) -> &mut Self
-    where
-        N: IntoNode<Msg>,
-    {
-        let cx = self.cx();
-
-        let mut child_cx = Context::default();
-
-        let index = self.children().len();
-
-        child_cx.id.set_id(&cx.id, index);
-
-        let child = child_fn(child_cx).into_node();
-
-        self.append_child(child);
-
-        self
-    }
-}
+const USE_AFTER_INTO_NODE: &str =
+    "cannot use `HtmlElement` after calling `into_node()`";
 
 // =============================================================================
 //                           Structs and Impls
@@ -65,11 +28,45 @@ pub struct HtmlElement<State, E, Msg> {
     _state: State,
 }
 
-impl<E, Msg> Html<Msg> for HtmlElement<AppliedCtx, E, Msg>
+impl<E, Msg> HtmlElement<AppliedCtx, E, Msg>
 where
     Msg: 'static,
     E: Sealed + 'static,
 {
+    pub fn text(&mut self, text: impl ToString) -> &mut Self {
+        let text = text.to_string();
+
+        let text_node = NodeTree::new_text(&text).into_node();
+
+        self.node
+            .as_mut()
+            .expect(USE_AFTER_INTO_NODE)
+            .append_child(text_node);
+
+        self
+    }
+
+    pub fn child<N>(
+        &mut self,
+        child_fn: impl FnOnce(Context<Msg>) -> N,
+    ) -> &mut Self
+    where
+        N: IntoNode<Msg>,
+    {
+        let cx = &self.node.as_ref().expect(USE_AFTER_INTO_NODE).cx;
+
+        let mut child_cx = Context::default();
+
+        let index = self.node.as_ref().unwrap().children().len();
+
+        child_cx.id.set_id(&cx.id, index);
+
+        let child = child_fn(child_cx).into_node();
+
+        self.node.as_mut().unwrap().append_child(child);
+
+        self
+    }
 }
 
 impl<E, Msg> IntoNode<Msg> for HtmlElement<AppliedCtx, E, Msg>
@@ -77,7 +74,7 @@ where
     Msg: 'static,
     E: Send + Sync + 'static,
 {
-    fn into_node(self) -> DynNode<Msg> {
+    fn into_node(self) -> NodeTree<Msg> {
         self.node
             .expect("called `into_node()` more than once")
             .into_node()
@@ -89,86 +86,11 @@ where
     Msg: 'static,
     E: Send + Sync + 'static,
 {
-    fn into_node(self) -> DynNode<Msg> {
+    fn into_node(self) -> NodeTree<Msg> {
         self.node
             .take()
             .expect("called `into_node()` more than once")
             .into_node()
-    }
-}
-
-impl<E, Msg> Node<Msg> for HtmlElement<AppliedCtx, E, Msg> {
-    fn node(&self) -> &NodeKind {
-        self.node
-            .as_ref()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .node()
-    }
-
-    fn node_mut(&mut self) -> &mut NodeKind {
-        self.node
-            .as_mut()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .node_mut()
-    }
-
-    fn cx(&self) -> &Context<Msg> {
-        self.node
-            .as_ref()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .cx()
-    }
-
-    fn set_cx(&mut self, cx: Context<Msg>) {
-        self.node
-            .as_mut()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .set_cx(cx)
-    }
-
-    fn children(&self) -> ChildrenRef<Msg> {
-        self.node
-            .as_ref()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .children()
-    }
-
-    fn children_mut(&mut self) -> ChildrenMut<Msg> {
-        self.node
-            .as_mut()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .children_mut()
-    }
-
-    #[track_caller]
-    fn append_child(&mut self, child: DynNode<Msg>) {
-        self.node
-            .as_mut()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .append_child(child)
-    }
-
-    fn clear_children(&mut self) {
-        self.node
-            .as_mut()
-            .expect(
-                "attempted to use node interafce after calling `.into_node()`",
-            )
-            .clear_children()
     }
 }
 
@@ -203,7 +125,7 @@ where
             _element, mut node, ..
         } = self;
 
-        node.as_mut().unwrap().set_cx(cx);
+        node.as_mut().unwrap().cx = cx;
 
         HtmlElement {
             _element,
@@ -231,18 +153,18 @@ macro_rules! generate_html_tags {
                     }
                 }
 
-                impl<Msg> PartialEq<DynNode<Msg> > for [<$tag:camel>] {
-                    fn eq(&self, rhs: &DynNode<Msg> ) -> bool {
-                        match rhs.node() {
+                impl<Msg> PartialEq<NodeTree<Msg> > for [<$tag:camel>] {
+                    fn eq(&self, rhs: &NodeTree<Msg> ) -> bool {
+                        match &rhs.node {
                             NodeKind::Tag { name, .. } => *name == self.to_string(),
                             _ => false,
                         }
                     }
                 }
 
-                impl<Msg> PartialEq<[<$tag:camel>]> for DynNode<Msg>  {
+                impl<Msg> PartialEq<[<$tag:camel>]> for NodeTree<Msg>  {
                     fn eq(&self, rhs: &[<$tag:camel>]) -> bool {
-                        match self.node() {
+                        match &self.node {
                             NodeKind::Tag { name, .. } => *name == rhs.to_string(),
                             _ => false,
                         }
