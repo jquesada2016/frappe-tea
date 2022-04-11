@@ -229,6 +229,16 @@ impl<T> Source<T> {
 
         self.notify();
     }
+
+    pub fn set_with<O>(&mut self, f: impl FnOnce(&mut T) -> O) -> O {
+        let v = unsafe { &mut (*self.0.get()).value };
+
+        let o = f(v);
+
+        self.notify();
+
+        o
+    }
 }
 
 pub struct Unsub<T>(usize, Weak<UnsafeCell<SharedState<T>>>);
@@ -259,12 +269,14 @@ mod tests {
         let expected_v = Rc::new(RefCell::new(0));
         let count = Rc::new(RefCell::new(0));
 
-        s.observer()
-            .subscribe(cloned![[count, expected_v], move |v| {
+        s.observer().subscribe(cloned![
+            [count, expected_v],
+            Box::new(move |v| {
                 assert_eq!(*v, *expected_v.borrow());
 
                 *count.borrow_mut() += 1;
-            }]);
+            })
+        ]);
 
         assert_eq!(*count.borrow(), 1);
 
@@ -284,11 +296,11 @@ mod tests {
 
         s.observer().map(|v| *v * 2).subscribe(cloned![
             [count, expected_v],
-            move |v| {
+            Box::new(move |v| {
                 assert_eq!(v, *expected_v.borrow());
 
                 *count.borrow_mut() += 1;
-            }
+            })
         ]);
 
         assert_eq!(*count.borrow(), 1);
@@ -298,5 +310,24 @@ mod tests {
         s.set(7);
 
         assert_eq!(*count.borrow(), 2);
+    }
+
+    #[test]
+    fn unsubscribe() {
+        let s = Source::new(0);
+
+        let unsub = s.observer().subscribe(Box::new(|_| {}));
+        assert!(unsub.is_some());
+
+        let unsub = unsub.unwrap();
+
+        let sub = unsafe { &(*s.0.get()).callbacks[0] };
+        assert!(sub.is_some());
+        drop(sub);
+
+        unsub.unsubscribe();
+        let sub = unsafe { &(*s.0.get()).callbacks[0] };
+        assert!(sub.is_none());
+        drop(sub);
     }
 }
