@@ -1,7 +1,11 @@
-use crate::{Context, IntoNode, NodeKind, NodeTree};
+use crate::{
+    components::{AppliedCtx, DynChild, MissingCtx},
+    prelude::{is_browser, Observable},
+    Context, EventHandler, IntoNode, NodeKind, NodeTree,
+};
 use paste::paste;
 use sealed::*;
-use std::{fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData, ops::Deref};
 
 mod sealed {
     pub trait Sealed {}
@@ -33,6 +37,19 @@ where
     Msg: 'static,
     E: Sealed + 'static,
 {
+    #[track_caller]
+    pub fn id(&mut self, id: impl ToString) -> &mut Self {
+        self.node
+            .as_ref()
+            .expect(USE_AFTER_INTO_NODE)
+            .children
+            .cx()
+            .id
+            .set_custom_id(id.to_string());
+
+        self
+    }
+
     pub fn text(&mut self, text: impl ToString) -> &mut Self {
         let this = self.node.as_mut().expect(USE_AFTER_INTO_NODE);
 
@@ -59,6 +76,74 @@ where
         let child = child_fn(cx).into_node();
 
         self.node.as_mut().unwrap().append_child(child);
+
+        self
+    }
+
+    pub fn dyn_child<O, N>(
+        &mut self,
+        bool_observer: O,
+        child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
+    ) -> &mut Self
+    where
+        O: Observable,
+        N: IntoNode<Msg>,
+    {
+        let this = self.node.as_ref().expect(USE_AFTER_INTO_NODE);
+
+        let cx = this.children.cx();
+
+        let dyn_child = DynChild::new(bool_observer, child_fn);
+
+        let dyn_child = dyn_child.cx(cx);
+
+        this.children.append(&this.node, dyn_child.into_node());
+
+        self
+    }
+
+    #[track_caller]
+    pub fn on<F>(&mut self, event: impl ToString, mut f: F) -> &mut Self
+    where
+        F: FnMut(&web_sys::Event) -> Option<Msg> + 'static,
+    {
+        let this = self.node.as_mut().expect(USE_AFTER_INTO_NODE);
+
+        let msg_dispatcher = this.children.msg_dispatcher();
+
+        match &mut this.node {
+            NodeKind::Tag {
+                node,
+                event_handlers,
+                ..
+            } => {
+                if is_browser() {
+                    let handler = gloo::events::EventListener::new(
+                        node.as_ref().unwrap().deref(),
+                        event.to_string(),
+                        move |e| {
+                            if let Some(msg_dispatcher) =
+                                msg_dispatcher.upgrade()
+                            {
+                                let msg = f(e);
+
+                                if let Some(msg) = msg {
+                                    msg_dispatcher.dispatch_msg(msg);
+                                }
+                            }
+                        },
+                    );
+
+                    let location = std::panic::Location::caller();
+
+                    event_handlers.push(EventHandler {
+                        _handler: Some(handler),
+                        location,
+                    })
+                }
+            }
+            _ => unreachable!(),
+        }
 
         self
     }
@@ -129,9 +214,6 @@ where
         }
     }
 }
-
-pub struct MissingCtx;
-pub struct AppliedCtx;
 
 macro_rules! generate_html_tags {
     ($($tag:ident),* $(,)?) => {

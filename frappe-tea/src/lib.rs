@@ -12,7 +12,7 @@ extern crate static_assertions;
 
 #[macro_use]
 mod utils;
-// pub mod components;
+pub mod components;
 pub mod html;
 pub mod reactive;
 pub mod testing;
@@ -21,7 +21,8 @@ use std::{
     collections::HashMap,
     fmt,
     lazy::SyncOnceCell,
-    sync::{atomic, Arc, Mutex, MutexGuard, Weak},
+    ops::Deref,
+    sync::{atomic, Arc, Mutex, Weak},
 };
 #[cfg(target_arch = "wasm32")]
 use utils::is_browser;
@@ -37,7 +38,7 @@ pub type DynCmd<Msg> = Box<dyn Cmd<Msg> + Send>;
 
 pub mod prelude {
     pub use super::*;
-    // pub use components::*;
+    pub use components::*;
     pub use reactive::*;
 }
 
@@ -214,6 +215,12 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+enum InsertMode {
+    Append,
+    Before,
+}
+
 #[derive(Educe)]
 #[educe(Default)]
 struct Children<Msg> {
@@ -227,6 +234,18 @@ impl<Msg> Children<Msg> {
         self.cx
             .get()
             .expect("attempted to get context before being set")
+    }
+
+    #[track_caller]
+    fn msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
+        self.cx()
+            .msg_dispatcher
+            .get()
+            .expect(
+                "attempted to get message dispatcher before connecting to \
+                     the runtime",
+            )
+            .clone()
     }
 
     #[track_caller]
@@ -249,65 +268,130 @@ impl<Msg> Children<Msg> {
     fn append(&self, this: &NodeKind, child: NodeTree<Msg>) {
         // We only need to insert items into the DOM when we are running
         // in the browser
-        // app
         #[cfg(target_arch = "wasm32")]
         if is_browser() {
-            match this {
-                // We don't have to insert anything here, because there is no
-                // actual node for us to insert into. Components are flat,
-                // i.e., they do not have an inherent parent, and therefore
-                // require a `tag` parent to exist. We will insert it later,
-                // once we have a parent which is a `tag` variant
-                NodeKind::Component { .. } => { /* do nothing */ }
-                NodeKind::Tag {
-                    node: parent_node, ..
-                } => match &child.node {
-                    // Since components don't have an actual tag, we
-                    // need to recursively insert all component children
-                    NodeKind::Component { .. } => todo!(),
-                    NodeKind::Tag {
-                        node: child_node, ..
-                    } => {
-                        parent_node
-                            .as_ref()
-                            .unwrap()
-                            .append_child(child_node.as_ref().unwrap())
-                            .unwrap();
-                    }
-                    NodeKind::Text(_, child_text) => {
-                        parent_node
-                            .as_ref()
-                            .unwrap()
-                            .append_child(child_text.as_ref().unwrap())
-                            .unwrap();
-                    }
-                },
-                NodeKind::Text(..) => panic!("text nodes cannot have children"),
-            }
+            this.append(&child);
         }
+
+        debug!("appending {child:#?}");
 
         self.children.lock().unwrap().push(child);
     }
 
+    /// # Panics
+    /// This function will panic when browser API's are not available.
+    #[cfg(target_arch = "wasm32")]
+    #[track_caller]
+    fn recurseively_append_component_children(
+        this: &web_sys::Node,
+        child: &NodeTree<Msg>,
+        insert_mode: InsertMode,
+    ) {
+        const FAILED_APPEND: &str = "failed to append node";
+
+        match &child.node {
+            NodeKind::Tag { node, .. } => match insert_mode {
+                InsertMode::Append => {
+                    this.append_child(node.as_ref().unwrap().deref())
+                        .expect(FAILED_APPEND);
+                }
+                InsertMode::Before => this
+                    .unchecked_ref::<web_sys::Element>()
+                    .before_with_node_1(node.as_ref().unwrap().deref())
+                    .expect(FAILED_APPEND),
+            },
+            NodeKind::Component {
+                opening_marker,
+                closing_marker,
+                ..
+            } => match insert_mode {
+                InsertMode::Append => {
+                    this.append_child(
+                        opening_marker
+                            .as_ref()
+                            .unwrap()
+                            .deref()
+                            .unchecked_ref::<web_sys::Node>(),
+                    )
+                    .expect(FAILED_APPEND);
+
+                    for child in child.children.children.lock().unwrap().iter()
+                    {
+                        Self::recurseively_append_component_children(
+                            this,
+                            child,
+                            insert_mode,
+                        );
+                    }
+
+                    this.append_child(
+                        closing_marker
+                            .as_ref()
+                            .unwrap()
+                            .deref()
+                            .unchecked_ref::<web_sys::Node>(),
+                    )
+                    .expect(FAILED_APPEND);
+                }
+                InsertMode::Before => {
+                    this.unchecked_ref::<web_sys::Element>()
+                        .before_with_node_1(
+                            opening_marker
+                                .as_ref()
+                                .unwrap()
+                                .deref()
+                                .unchecked_ref::<web_sys::Node>(),
+                        )
+                        .expect(FAILED_APPEND);
+
+                    for child in child.children.children.lock().unwrap().iter()
+                    {
+                        Self::recurseively_append_component_children(
+                            this,
+                            child,
+                            insert_mode,
+                        );
+                    }
+
+                    this.unchecked_ref::<web_sys::Element>()
+                        .before_with_node_1(
+                            closing_marker
+                                .as_ref()
+                                .unwrap()
+                                .deref()
+                                .unchecked_ref::<web_sys::Node>(),
+                        )
+                        .expect(FAILED_APPEND);
+                }
+            },
+            NodeKind::Text(_, node) => match insert_mode {
+                InsertMode::Append => {
+                    this.append_child(node.as_ref().unwrap().deref())
+                        .expect(FAILED_APPEND);
+                }
+                InsertMode::Before => this
+                    .unchecked_ref::<web_sys::Element>()
+                    .before_with_node_1(node.as_ref().unwrap().deref())
+                    .expect(FAILED_APPEND),
+            },
+        }
+    }
+
     fn clear(&self) {
+        // We need to reset next_index to keep the id generation
+        // consistant
+        *self.cx().next_index.lock().unwrap() = 0;
+
         self.children.lock().unwrap().clear();
     }
 }
 
 #[derive(Educe)]
-#[educe(Deref)]
-pub struct ChildrenRef<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
-
-#[derive(Educe)]
-#[educe(Deref, DerefMut)]
-pub struct ChildrenMut<'a, Msg>(MutexGuard<'a, Vec<NodeTree<Msg>>>);
-
-#[derive(Educe)]
-#[educe(Default)]
+#[educe(Default, Clone)]
 pub struct Context<Msg> {
     id: Id,
     msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
-    next_index: Mutex<usize>,
+    next_index: Arc<Mutex<usize>>,
 }
 
 impl<Msg> Context<Msg> {
@@ -323,9 +407,32 @@ impl<Msg> Context<Msg> {
     }
 }
 
+pub struct EventHandler {
+    #[cfg(target_arch = "wasm32")]
+    _handler: Option<gloo::events::EventListener>,
+    location: &'static std::panic::Location<'static>,
+}
+
+assert_impl_all!(EventHandler: Send);
+
+/// # Safety
+/// This is only safe if [`EventHandler`] is not accessed from another thread
+/// in wasm.
+unsafe impl Send for EventHandler {}
+
+impl Clone for EventHandler {
+    fn clone(&self) -> Self {
+        Self {
+            #[cfg(target_arch = "wasm32")]
+            _handler: None,
+            location: self.location,
+        }
+    }
+}
+
 /// Represents a topologically unique and stable ID in a node tree.
-#[derive(Clone, Debug, Default, Eq)]
-struct Id(usize, usize, usize, Option<String>);
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Id(usize, usize, usize, SyncOnceCell<String>);
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -341,13 +448,9 @@ impl fmt::Display for Id {
         }
     }
 }
-
-/// Does not check to see if the custom id's are eq.
-impl PartialEq for Id {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.sum() == rhs.sum()
-            && self.depth() == rhs.depth()
-            && self.index() == rhs.index()
+impl PartialEq<(usize, usize, usize)> for Id {
+    fn eq(&self, rhs: &(usize, usize, usize)) -> bool {
+        self.sum() == rhs.0 && self.depth() == rhs.1 && self.index() == rhs.2
     }
 }
 
@@ -365,7 +468,7 @@ impl Id {
     }
 
     fn custom_id(&self) -> Option<&str> {
-        self.3.as_deref()
+        self.3.get().map(String::as_str)
     }
 
     fn set_sum(&mut self, sum: usize) {
@@ -380,8 +483,9 @@ impl Id {
         self.2 += index;
     }
 
-    fn _set_custom_id(&mut self, custom_id: String) {
-        self.3 = Some(custom_id);
+    #[track_caller]
+    fn set_custom_id(&self, custom_id: String) {
+        self.3.set(custom_id).expect("cannot set id more than once");
     }
 
     fn set_id(&mut self, parent_id: &Id, index: usize) {
@@ -393,7 +497,16 @@ impl Id {
     }
 }
 
-#[allow(dead_code)]
+// /// Throw-away trait to produce a None value with Educe Clone
+// trait OptionCloneToNone<T> {
+//     fn clone(&self) -> Option<T> {
+//         None
+//     }
+// }
+
+// impl<T> OptionCloneToNone<T> for Option<T> {}
+
+#[derive(Clone)]
 pub enum NodeKind {
     Component {
         /// Comment nodes allow for better readability and debugging,
@@ -430,6 +543,11 @@ pub enum NodeKind {
 
         #[cfg(target_arch = "wasm32")]
         closing_marker: Option<WasmValue<web_sys::Comment>>,
+        // /// Used to unsubscribe the component from any subscriptions
+        // /// when the component is dropped.
+        // /// TODO: make this Send
+        // #[educe(Clone(trait = "OptionCloneToNone"))]
+        // unsubscriber: Option<Mutex<Box<dyn Unsubscribe + Send>>>,
     },
     Tag {
         name: String,
@@ -437,6 +555,7 @@ pub enum NodeKind {
         node: Option<WasmValue<web_sys::Node>>,
         attributes: HashMap<String, String>,
         properties: HashMap<String, String>,
+        event_handlers: Vec<EventHandler>,
     },
     Text(
         String,
@@ -525,6 +644,7 @@ impl NodeKind {
             node,
             attributes: HashMap::new(),
             properties: HashMap::new(),
+            event_handlers: vec![],
         }
     }
 
@@ -548,6 +668,7 @@ impl NodeKind {
             text_node,
         )
     }
+
     #[cfg(target_arch = "wasm32")]
     fn from_raw_node(node: web_sys::Node) -> Self {
         let (name, text) = if is_browser() {
@@ -568,6 +689,7 @@ impl NodeKind {
                 node: Some(WasmValue(node)),
                 attributes: HashMap::new(),
                 properties: HashMap::new(),
+                event_handlers: vec![],
             }
         } else {
             let text = text.unwrap();
@@ -578,6 +700,83 @@ impl NodeKind {
                     gloo::utils::document().create_text_node(&text),
                 )),
             )
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn append<Msg>(&self, child: &NodeTree<Msg>) {
+        match self {
+            // We have to check to see if any of the component parts
+            // are inserted in the DOM. If they are, then this means
+            // we can proceed as normal, inserting elements before
+            // the closing marker. If not then  We don't have to
+            // insert anything here, because there is no
+            // actual node for us to insert into. Components are flat,
+            // i.e., they do not have an inherent parent in the DOM,
+            // and therefore require a `tag` parent to exist. We will
+            // insert it later, once we have a parent which is a `tag`
+            // variant
+            NodeKind::Component { closing_marker, .. } => {
+                let closing_marker = closing_marker.as_ref().unwrap().deref();
+
+                if closing_marker.is_connected() {
+                    match &child.node {
+                        Self::Component { .. } => {
+                            Children::recurseively_append_component_children(
+                                closing_marker,
+                                child,
+                                InsertMode::Before,
+                            );
+
+                            todo!("add InsertBefore");
+                        }
+                        Self::Tag { node, .. } => closing_marker
+                            .unchecked_ref::<web_sys::Element>()
+                            .before_with_node_1(node.as_ref().unwrap().deref())
+                            .unwrap_or_else(|v| {
+                                panic!("failed to prepend node: {:#?}", v)
+                            }),
+                        Self::Text(_, node) => closing_marker
+                            .unchecked_ref::<web_sys::Element>()
+                            .before_with_node_1(node.as_ref().unwrap().deref())
+                            .unwrap_or_else(|v| {
+                                panic!("failed to prepend node: {:#?}", v)
+                            }),
+                    }
+                } else {
+                    /* do nothing yet */
+                }
+            }
+            NodeKind::Tag {
+                node: parent_node, ..
+            } => match &child.node {
+                // Since components don't have an actual tag, we
+                // need to recursively insert all component children
+                NodeKind::Component { .. } => {
+                    Children::recurseively_append_component_children(
+                        &*parent_node.as_ref().unwrap(),
+                        child,
+                        InsertMode::Append,
+                    )
+                }
+                NodeKind::Tag {
+                    node: child_node, ..
+                } => {
+                    parent_node
+                        .as_ref()
+                        .unwrap()
+                        .append_child(child_node.as_ref().unwrap())
+                        .unwrap();
+                }
+                NodeKind::Text(_, child_text) => {
+                    parent_node
+                        .as_ref()
+                        .unwrap()
+                        .append_child(child_text.as_ref().unwrap())
+                        .unwrap();
+                }
+            },
+            NodeKind::Text(..) => panic!("text nodes cannot have children"),
         }
     }
 }
@@ -643,6 +842,7 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
+    #[track_caller]
     pub fn append_child(&mut self, child: NodeTree<Msg>) {
         self.children.append(&self.node, child);
     }
@@ -657,44 +857,45 @@ impl<Msg> NodeTree<Msg> {
 impl<Msg> Drop for NodeTree<Msg> {
     // TODO: Batch the drops and synchronize with `requestAnimationFrame`
     fn drop(&mut self) {
+        debug!("dropping {self:#?}");
+
         // We only want to drop if we aren't the root node, since the
         // root node was provided externally, and that would just be rude
-        if let Some(cx) = self.children.cx.get() {
-            if cx.id != Id(0, 0, 0, None) {
-                match &self.node {
-                    NodeKind::Component {
-                        opening_marker,
-                        state_marker,
-                        closing_marker,
-                        ..
-                    } => {
-                        if let Some(opening_marker) = opening_marker {
-                            opening_marker
-                                .unchecked_ref::<web_sys::Element>()
-                                .remove();
-                        }
 
-                        if let Some(state_marker) = state_marker {
-                            state_marker
-                                .unchecked_ref::<web_sys::Element>()
-                                .remove();
-                        }
+        if self.children.cx().id != (0, 0, 0) {
+            match &self.node {
+                NodeKind::Component {
+                    opening_marker,
+                    state_marker,
+                    closing_marker,
+                    ..
+                } => {
+                    if let Some(opening_marker) = opening_marker {
+                        opening_marker
+                            .unchecked_ref::<web_sys::Element>()
+                            .remove();
+                    }
 
-                        if let Some(closing_marker) = closing_marker {
-                            closing_marker
-                                .unchecked_ref::<web_sys::Element>()
-                                .remove();
-                        }
+                    if let Some(state_marker) = state_marker {
+                        state_marker
+                            .unchecked_ref::<web_sys::Element>()
+                            .remove();
                     }
-                    NodeKind::Tag { node, .. } => {
-                        if let Some(node) = node {
-                            node.unchecked_ref::<web_sys::Element>().remove()
-                        }
+
+                    if let Some(closing_marker) = closing_marker {
+                        closing_marker
+                            .unchecked_ref::<web_sys::Element>()
+                            .remove();
                     }
-                    NodeKind::Text(_, text) => {
-                        if let Some(text) = text {
-                            text.unchecked_ref::<web_sys::Element>().remove();
-                        }
+                }
+                NodeKind::Tag { node, .. } => {
+                    if let Some(node) = node {
+                        node.unchecked_ref::<web_sys::Element>().remove()
+                    }
+                }
+                NodeKind::Text(_, text) => {
+                    if let Some(text) = text {
+                        text.unchecked_ref::<web_sys::Element>().remove();
                     }
                 }
             }
@@ -708,7 +909,7 @@ impl<Msg> Drop for NodeTree<Msg> {
 /// This is only safe if you can guarantee the value will only ever be accessed on the main
 /// thread. For the most part, this means, if you are running in the browser, then it is
 /// safe to access this value (for now).
-#[derive(Educe)]
+#[derive(Educe, Clone)]
 #[educe(Deref, DerefMut)]
 pub struct WasmValue<T>(T);
 

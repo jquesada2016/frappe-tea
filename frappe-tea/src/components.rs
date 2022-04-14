@@ -30,3 +30,6 @@ where
     _props: C::Props,
     _node: NodeTree<Msg>,
 }
+
+pub struct MissingCtx;
+pub struct AppliedCtx;

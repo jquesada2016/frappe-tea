@@ -1,7 +1,8 @@
 use std::{
     cell::{RefCell, UnsafeCell},
     fmt, ops,
-    rc::{Rc, Weak},
+    rc::Rc,
+    sync::{Arc, Weak},
 };
 
 // =============================================================================
@@ -99,6 +100,10 @@ where
 #[derive(Clone)]
 pub struct Observer<T>(Weak<UnsafeCell<SharedState<T>>>);
 
+/// # Safety
+/// This is safe for the same reasons [`SharedState`] is `Send`.
+unsafe impl<T> Send for Observer<T> where T: Send {}
+
 impl<T> Observable for Observer<T>
 where
     T: 'static,
@@ -151,6 +156,15 @@ struct SharedState<T> {
     callbacks: Vec<Option<Box<dyn FnMut(Ref<T>)>>>,
 }
 
+assert_impl_all!(SharedState<String>: Send);
+
+/// # Safety
+/// This is safe because we guarantee only one thread can ever be reading
+/// or writing to the shared state because the runtime can only be accessed
+/// when a mutex lock can be acquired for the model which is used in the
+/// update phase.
+unsafe impl<T> Send for SharedState<T> where T: Send {}
+
 impl<T> SharedState<T> {
     fn new(value: T) -> Self {
         Self {
@@ -160,16 +174,21 @@ impl<T> SharedState<T> {
     }
 }
 
-pub struct Source<T>(Rc<UnsafeCell<SharedState<T>>>);
+pub struct Source<T>(Arc<UnsafeCell<SharedState<T>>>);
 
 assert_impl_all! {
     Source<String>:
+        fmt::Debug,
+        Default,
         ops::Deref<Target = String>,
         fmt::Display,
-        fmt::Debug,
-        From<String>
+        From<String>,
 }
 assert_not_impl_any!(Source<()>: Clone);
+
+/// # Safety
+/// This is safe for the same reasons [`SharedState`] is `Send`.
+unsafe impl<T> Send for Source<T> where T: Send {}
 
 impl<T> fmt::Debug for Source<T>
 where
@@ -177,6 +196,15 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         unsafe { (*self.0.get()).value.fmt(f) }
+    }
+}
+
+impl<T> Default for Source<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self::new(T::default())
     }
 }
 
@@ -205,17 +233,17 @@ impl<T> From<T> for Source<T> {
 
 impl<T> Source<T> {
     pub fn new(value: T) -> Self {
-        Self(Rc::new(UnsafeCell::new(SharedState::new(value))))
+        Self(Arc::new(UnsafeCell::new(SharedState::new(value))))
     }
 
     pub fn observer(&self) -> Observer<T> {
-        Observer(Rc::downgrade(&self.0))
+        Observer(Arc::downgrade(&self.0))
     }
 
     fn notify(&mut self) {
         unsafe {
             (*self.0.get()).callbacks.iter_mut().for_each(|f| {
-                let v_ref = Ref(Rc::downgrade(&self.0));
+                let v_ref = Ref(Arc::downgrade(&self.0));
 
                 if let Some(f) = f {
                     f(v_ref);
@@ -243,6 +271,10 @@ impl<T> Source<T> {
 
 pub struct Unsub<T>(usize, Weak<UnsafeCell<SharedState<T>>>);
 
+/// # Safety
+/// This is safe for the same reasons [`SharedState`] is `Send`.
+unsafe impl<T> Send for Unsub<T> {}
+
 impl<T> Unsubscribe for Unsub<T> {
     fn unsubscribe(self: Box<Self>) {
         if let Some(shared_state) = self.1.upgrade() {
@@ -266,8 +298,8 @@ mod tests {
     fn set_value() {
         let mut s = Source::new(0);
 
-        let expected_v = Rc::new(RefCell::new(0));
-        let count = Rc::new(RefCell::new(0));
+        let expected_v = Arc::new(RefCell::new(0));
+        let count = Arc::new(RefCell::new(0));
 
         s.observer().subscribe(cloned![
             [count, expected_v],
@@ -291,8 +323,8 @@ mod tests {
     fn map() {
         let mut s = Source::new(1);
 
-        let expected_v = Rc::new(RefCell::new(2));
-        let count = Rc::new(RefCell::new(0));
+        let expected_v = Arc::new(RefCell::new(2));
+        let count = Arc::new(RefCell::new(0));
 
         s.observer().map(|v| *v * 2).subscribe(cloned![
             [count, expected_v],
