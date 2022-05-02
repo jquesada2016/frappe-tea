@@ -32,4 +32,4 @@ where
 }
 
 pub struct MissingCtx;
-pub struct AppliedCtx;
+pub struct Ctx;

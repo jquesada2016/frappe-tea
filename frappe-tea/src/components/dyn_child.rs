@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{prelude::Observable, Context, IntoNode, NodeTree};
 
-use super::{AppliedCtx, MissingCtx};
+use super::{Ctx, MissingCtx};
 
 pub struct DynChild<State, Msg, O, F> {
     node: NodeTree<Msg>,
@@ -28,7 +28,7 @@ where
         }
     }
 
-    pub fn cx(self, cx: &Context<Msg>) -> DynChild<AppliedCtx, Msg, O, F> {
+    pub fn cx(self, cx: &Context<Msg>) -> DynChild<Ctx, Msg, O, F> {
         let Self {
             node,
             observer,
@@ -42,12 +42,12 @@ where
             node,
             observer,
             child_fn,
-            _state: AppliedCtx,
+            _state: Ctx,
         }
     }
 }
 
-impl<Msg, O, F, N> IntoNode<Msg> for DynChild<AppliedCtx, Msg, O, F>
+impl<Msg, O, F, N> IntoNode<Msg> for DynChild<Ctx, Msg, O, F>
 where
     Msg: 'static,
     O: Observable,
@@ -70,14 +70,8 @@ where
 
         let cx = node.children.cx().clone();
 
-        debug!("subscribing");
-
         observer.subscribe(Box::new(move |v| {
-            debug!("observer reacting");
-
             if let Some(children) = children.upgrade() {
-                debug!("children being updated");
-
                 // Remove the existing children
                 children.clear();
 

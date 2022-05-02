@@ -205,6 +205,8 @@ where
 
         let root_node = render(target, child, cx);
 
+        debug!("{root_node}");
+
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
         }
@@ -272,8 +274,6 @@ impl<Msg> Children<Msg> {
         if is_browser() {
             this.append(&child);
         }
-
-        debug!("appending {child:#?}");
 
         self.children.lock().unwrap().push(child);
     }
@@ -798,8 +798,48 @@ impl<Msg> fmt::Debug for NodeTree<Msg> {
     }
 }
 impl<Msg> fmt::Display for NodeTree<Msg> {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Every byte saved is a byte to live another day :)
+
+        match &self.node {
+            NodeKind::Component { .. } => {
+                f.write_fmt(format_args!(
+                    r#"<template id="{}o"></template>"#,
+                    self.children.cx().id,
+                ))?;
+
+                for child in self.children.children.lock().unwrap().iter() {
+                    child.fmt(f)?
+                }
+
+                f.write_fmt(format_args!(
+                    r#"<template id="{}c"></template>"#,
+                    self.children.cx().id,
+                ))
+            }
+            NodeKind::Tag {
+                name, attributes, ..
+            } => {
+                if attributes.is_empty() {
+                    f.write_fmt(format_args!("<{name}>"))?;
+                } else {
+                    f.write_fmt(format_args!("<{name} "))?;
+
+                    for (name, val) in attributes {
+                        f.write_fmt(format_args!(r#"{name}="{val}""#))?;
+                    }
+
+                    f.write_str(">")?;
+                }
+
+                for child in self.children.children.lock().unwrap().iter() {
+                    child.fmt(f)?;
+                }
+
+                f.write_fmt(format_args!("</{name}>"))
+            }
+            NodeKind::Text(text, ..) => text.fmt(f),
+        }
     }
 }
 
@@ -857,8 +897,6 @@ impl<Msg> NodeTree<Msg> {
 impl<Msg> Drop for NodeTree<Msg> {
     // TODO: Batch the drops and synchronize with `requestAnimationFrame`
     fn drop(&mut self) {
-        debug!("dropping {self:#?}");
-
         // We only want to drop if we aren't the root node, since the
         // root node was provided externally, and that would just be rude
 

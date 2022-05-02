@@ -1,57 +1,56 @@
 use crate::{
-    components::{AppliedCtx, DynChild, MissingCtx},
+    components::DynChild,
     prelude::{is_browser, Observable},
     Context, EventHandler, IntoNode, NodeKind, NodeTree,
 };
 use paste::paste;
 use sealed::*;
-use std::{fmt, marker::PhantomData, ops::Deref};
+use std::{fmt, ops::Deref};
 
 mod sealed {
     pub trait Sealed {}
-
-    impl Sealed for () {}
 }
-
-// =============================================================================
-//                               Constants
-// =============================================================================
-
-const USE_AFTER_INTO_NODE: &str =
-    "cannot use `HtmlElement` after calling `into_node()`";
 
 // =============================================================================
 //                           Structs and Impls
 // =============================================================================
 
-pub struct HtmlElement<State, E, Msg> {
-    _element: PhantomData<E>,
+pub struct HtmlElement<E, Msg> {
+    _element: E,
     /// This field is `Option<_>` because it gaurds agains calling [IntoNode::into_node`]
     /// more than once.
-    node: Option<NodeTree<Msg>>,
-    _state: State,
+    node: NodeTree<Msg>,
 }
 
-impl<E, Msg> HtmlElement<AppliedCtx, E, Msg>
+impl<E, Msg> HtmlElement<E, Msg>
 where
     Msg: 'static,
-    E: Sealed + 'static,
+    E: Sealed + ToString + 'static,
 {
+    pub fn new(element: E, cx: &Context<Msg>) -> Self {
+        Self {
+            node: NodeTree::new_tag(&element.to_string()),
+            _element: element,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_raw_node(element: E, node: web_sys::Node) -> Self {
+        Self {
+            _element: element,
+            node: NodeTree::from_raw_node(node),
+        }
+    }
+
     #[track_caller]
-    pub fn id(&mut self, id: impl ToString) -> &mut Self {
-        self.node
-            .as_ref()
-            .expect(USE_AFTER_INTO_NODE)
-            .children
-            .cx()
-            .id
-            .set_custom_id(id.to_string());
+    pub fn id(self, id: impl ToString) -> Self {
+        self.node.children.cx().id.set_custom_id(id.to_string());
 
         self
     }
 
-    pub fn text(&mut self, text: impl ToString) -> &mut Self {
-        let this = self.node.as_mut().expect(USE_AFTER_INTO_NODE);
+    pub fn text(mut self, text: impl ToString) -> Self {
+        let this = &mut self.node;
 
         let text = text.to_string();
 
@@ -64,32 +63,29 @@ where
         self
     }
 
-    pub fn child<N>(
-        &mut self,
-        child_fn: impl FnOnce(&Context<Msg>) -> N,
-    ) -> &mut Self
+    pub fn child<N>(mut self, child_fn: impl FnOnce(&Context<Msg>) -> N) -> Self
     where
         N: IntoNode<Msg>,
     {
-        let cx = self.node.as_ref().expect(USE_AFTER_INTO_NODE).children.cx();
+        let cx = self.node.children.cx();
 
         let child = child_fn(cx).into_node();
 
-        self.node.as_mut().unwrap().append_child(child);
+        self.node.append_child(child);
 
         self
     }
 
     pub fn dyn_child<O, N>(
-        &mut self,
+        self,
         bool_observer: O,
         child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
-    ) -> &mut Self
+    ) -> Self
     where
         O: Observable,
         N: IntoNode<Msg>,
     {
-        let this = self.node.as_ref().expect(USE_AFTER_INTO_NODE);
+        let this = &self.node;
 
         let cx = this.children.cx();
 
@@ -103,11 +99,11 @@ where
     }
 
     #[track_caller]
-    pub fn on<F>(&mut self, event: impl ToString, mut f: F) -> &mut Self
+    pub fn on<F>(mut self, event: impl ToString, mut f: F) -> Self
     where
         F: FnMut(&web_sys::Event) -> Option<Msg> + 'static,
     {
-        let this = self.node.as_mut().expect(USE_AFTER_INTO_NODE);
+        let this = &mut self.node;
 
         let msg_dispatcher = this.children.msg_dispatcher();
 
@@ -149,71 +145,17 @@ where
     }
 }
 
-impl<E, Msg> IntoNode<Msg> for HtmlElement<AppliedCtx, E, Msg>
+impl<E, Msg> IntoNode<Msg> for HtmlElement<E, Msg>
 where
     Msg: 'static,
     E: Send + Sync + 'static,
 {
     fn into_node(self) -> NodeTree<Msg> {
-        self.node
-            .expect("called `into_node()` more than once")
-            .into_node()
+        self.node.into_node()
     }
 }
 
-impl<E, Msg> IntoNode<Msg> for &mut HtmlElement<AppliedCtx, E, Msg>
-where
-    Msg: 'static,
-    E: Send + Sync + 'static,
-{
-    fn into_node(self) -> NodeTree<Msg> {
-        self.node
-            .take()
-            .expect("called `into_node()` more than once")
-            .into_node()
-    }
-}
-
-impl<State, E, Msg> sealed::Sealed for HtmlElement<State, E, Msg> where
-    E: sealed::Sealed
-{
-}
-
-impl<E, Msg> HtmlElement<MissingCtx, E, Msg>
-where
-    E: sealed::Sealed + ToString,
-{
-    pub fn new(element: E) -> Self {
-        Self {
-            _element: PhantomData::default(),
-            node: Some(NodeTree::new_tag(&element.to_string())),
-            _state: MissingCtx,
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn from_raw_node(_element: E, node: web_sys::Node) -> Self {
-        Self {
-            _element: PhantomData::default(),
-            node: Some(NodeTree::from_raw_node(node)),
-            _state: MissingCtx,
-        }
-    }
-
-    pub fn cx(self, cx: &Context<Msg>) -> HtmlElement<AppliedCtx, E, Msg> {
-        let Self {
-            _element, mut node, ..
-        } = self;
-
-        node.as_mut().unwrap().children.set_cx(cx);
-
-        HtmlElement {
-            _element,
-            node,
-            _state: AppliedCtx,
-        }
-    }
-}
+impl<E, Msg> sealed::Sealed for HtmlElement<E, Msg> where E: sealed::Sealed {}
 
 macro_rules! generate_html_tags {
     ($($tag:ident),* $(,)?) => {
@@ -248,8 +190,11 @@ macro_rules! generate_html_tags {
                     }
                 }
 
-                pub fn $tag<Msg>() -> HtmlElement<MissingCtx, [<$tag:camel>], Msg> {
-                    HtmlElement::new([<$tag:camel>])
+                pub fn $tag<Msg>(cx: &Context<Msg>) -> HtmlElement<[<$tag:camel>], Msg>
+                where
+                    Msg: 'static
+                {
+                    HtmlElement::new([<$tag:camel>], cx)
                 }
             )*
         }
