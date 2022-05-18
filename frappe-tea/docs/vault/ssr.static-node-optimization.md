@@ -2,7 +2,7 @@
 id: 7mak5c3wg275gj38mwm6wph
 title: Static Node Optimization
 desc: ""
-updated: 1650217414998
+updated: 1651619276167
 created: 1650036024318
 ---
 
@@ -46,3 +46,38 @@ This aforementioned optimization is definitly valid for `DynChild`, but we need 
 ## Component Elegibility
 
 - [x] `DynNode`
+
+## Implementation Considerations
+
+Given the fact that we would like to have nodes not be queried from the DOM unless they are dynamic, how to we differentiate a dynamic node from a static one? If any dynamic property, except [[components.core.dyn-child]] (`.dyn_child()`) or [[components.core.dyn-text] (`.dyn_text()`)] is used, then the node will be considered dynamic.
+This would also mean that it would not be possible to request a reference to a node at runtime for static nodes. We could encode this explicitly in a typestate, or we could do it implicitly with a marker.
+
+The reason we would potentially want to retrieve a reference to a node, is so that we can perform arbitrary actions on the node, such as focusing the element, etc.
+
+```rust
+div(cx) // HtmlElement<Static, Msg>
+  .dyn_class(/* ... */) // HtmlElement<Dynamic, Msg>
+```
+
+What I am ultimately trying to accomplish with the above typestate between static and dynamic nodes, is to avoid users from applying cfg's that might cause subtle bugs and incompatibility between SSR and client code. If the two disagree, bugs are bound to arise. Take the following, for example.
+
+```rust
+fn my_view() -> impl IntoNode<Msg> {
+  let d = div();
+
+  let d = div.text("hello"); // static
+
+  // Only run the following code on the client
+  #[cfg(target_arch = "wasm32")]
+  let d = div.dyn_class(/* ... */); // dynamic
+
+  d
+}
+```
+
+The above snippet is problematic, because as far as SSR is concerned, the node is static, because there are no dynamic elements to the node. However, this will cause the node to not be found when queried, because the server did not generate any id for the element.
+
+There might be a couple potential fixes to the problem.
+
+- We can default to always generating id's, and let the client decide if it cares for the node being static or dynamic, and proceed as usual.
+-

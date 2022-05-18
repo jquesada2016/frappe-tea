@@ -1,5 +1,4 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rayon::prelude::*;
 
 fn basic(c: &mut Criterion) {
     let mut group = c.benchmark_group("linear iteration");

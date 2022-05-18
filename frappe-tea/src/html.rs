@@ -1,11 +1,7 @@
-use crate::{
-    components::DynChild,
-    prelude::{is_browser, Observable},
-    Context, EventHandler, IntoNode, NodeKind, NodeTree,
-};
+use crate::{prelude::Observable, Context, IntoNode, NodeKind, NodeTree};
 use paste::paste;
 use sealed::*;
-use std::{fmt, ops::Deref};
+use std::fmt;
 
 mod sealed {
     pub trait Sealed {}
@@ -15,147 +11,164 @@ mod sealed {
 //                           Structs and Impls
 // =============================================================================
 
-pub struct HtmlElement<E, Msg> {
+pub struct HtmlElement<'a, E, Msg> {
     _element: E,
-    /// This field is `Option<_>` because it gaurds agains calling [IntoNode::into_node`]
-    /// more than once.
-    node: NodeTree<Msg>,
+    _cx: &'a Context<Msg>,
 }
 
-impl<E, Msg> HtmlElement<E, Msg>
+impl<'a, E, Msg> HtmlElement<'a, E, Msg>
 where
     Msg: 'static,
     E: Sealed + ToString + 'static,
 {
-    pub fn new(element: E, cx: &Context<Msg>) -> Self {
+    pub fn new(element: E, cx: &'a Context<Msg>) -> Self {
         Self {
-            node: NodeTree::new_tag(&element.to_string()),
+            _cx: cx,
             _element: element,
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn from_raw_node(element: E, node: web_sys::Node) -> Self {
+    pub fn from_raw_node(
+        cx: &'a Context<Msg>,
+        element: E,
+        _node: web_sys::Node,
+    ) -> Self {
         Self {
             _element: element,
-            node: NodeTree::from_raw_node(node),
+            _cx: cx,
         }
     }
 
     #[track_caller]
-    pub fn id(self, id: impl ToString) -> Self {
-        self.node.children.cx().id.set_custom_id(id.to_string());
+    pub fn id(self, _id: impl ToString) -> Self {
+        // self.node.children.cx().id.set_custom_id(id.to_string());
 
-        self
+        // self
+
+        todo!()
     }
 
-    pub fn text(mut self, text: impl ToString) -> Self {
-        let this = &mut self.node;
+    pub fn text(self, _text: impl ToString) -> Self {
+        // let this = &mut self.node;
 
-        let text = text.to_string();
+        // let text = text.to_string();
 
-        let text_node = NodeTree::new_text(&text).into_node();
+        // let text_node = NodeTree::new_text(&text).into_node();
 
-        text_node.children.set_cx(this.children.cx());
+        // text_node.children.set_cx(this.children.cx());
 
-        this.append_child(text_node);
+        // this.append_child(text_node);
 
-        self
+        // self
+
+        todo!()
     }
 
-    pub fn child<N>(mut self, child_fn: impl FnOnce(&Context<Msg>) -> N) -> Self
+    pub fn child<N>(self, _child_fn: impl FnOnce(&Context<Msg>) -> N) -> Self
     where
         N: IntoNode<Msg>,
     {
-        let cx = self.node.children.cx();
+        // let cx = self.node.children.cx();
 
-        let child = child_fn(cx).into_node();
+        // let child = child_fn(cx).into_node();
 
-        self.node.append_child(child);
+        // self.node.append_child(child);
 
-        self
+        // self
+
+        todo!()
     }
 
     pub fn dyn_child<O, N>(
         self,
-        bool_observer: O,
-        child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
+        _bool_observer: O,
+        _child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
     ) -> Self
     where
         O: Observable,
         N: IntoNode<Msg>,
     {
-        let this = &self.node;
+        // let this = &self.node;
 
-        let cx = this.children.cx();
+        // let cx = this.children.cx();
 
-        let dyn_child = DynChild::new(bool_observer, child_fn);
+        // let dyn_child = DynChild::new(bool_observer, child_fn);
 
-        let dyn_child = dyn_child.cx(cx);
+        // let dyn_child = dyn_child.cx(cx);
 
-        this.children.append(&this.node, dyn_child.into_node());
+        // this.children.append(&this.node, dyn_child.into_node());
 
-        self
+        // self
+
+        todo!()
     }
 
     #[track_caller]
-    pub fn on<F>(mut self, event: impl ToString, mut f: F) -> Self
+    pub fn on<F>(self, _event: impl ToString, mut _f: F) -> Self
     where
         F: FnMut(&web_sys::Event) -> Option<Msg> + 'static,
     {
-        let this = &mut self.node;
+        // let this = &mut self.node;
 
-        let msg_dispatcher = this.children.msg_dispatcher();
+        // let msg_dispatcher = this.children.msg_dispatcher();
 
-        match &mut this.node {
-            NodeKind::Tag {
-                node,
-                event_handlers,
-                ..
-            } => {
-                if is_browser() {
-                    let handler = gloo::events::EventListener::new(
-                        node.as_ref().unwrap().deref(),
-                        event.to_string(),
-                        move |e| {
-                            if let Some(msg_dispatcher) =
-                                msg_dispatcher.upgrade()
-                            {
-                                let msg = f(e);
+        // match &mut this.node {
+        //     NodeKind::Tag {
+        //         node,
+        //         event_handlers,
+        //         ..
+        //     } => {
+        //         if is_browser() {
+        //             let handler = gloo::events::EventListener::new(
+        //                 node.as_ref().unwrap().deref(),
+        //                 event.to_string(),
+        //                 move |e| {
+        //                     if let Some(msg_dispatcher) =
+        //                         msg_dispatcher.upgrade()
+        //                     {
+        //                         let msg = f(e);
 
-                                if let Some(msg) = msg {
-                                    msg_dispatcher.dispatch_msg(msg);
-                                }
-                            }
-                        },
-                    );
+        //                         if let Some(msg) = msg {
+        //                             msg_dispatcher.dispatch_msg(msg);
+        //                         }
+        //                     }
+        //                 },
+        //             );
 
-                    let location = std::panic::Location::caller();
+        //             let location = std::panic::Location::caller();
 
-                    event_handlers.push(EventHandler {
-                        _handler: Some(handler),
-                        location,
-                    })
-                }
-            }
-            _ => unreachable!(),
-        }
+        //             event_handlers.push(EventHandler {
+        //                 _handler: Some(handler),
+        //                 location,
+        //             })
+        //         }
+        //     }
+        //     _ => unreachable!(),
+        // }
 
-        self
+        // self
+
+        todo!()
     }
 }
 
-impl<E, Msg> IntoNode<Msg> for HtmlElement<E, Msg>
+impl<'a, E, Msg> IntoNode<Msg> for HtmlElement<'a, E, Msg>
 where
     Msg: 'static,
-    E: Send + Sync + 'static,
+    E: ToString + Send + Sync + 'static,
 {
     fn into_node(self) -> NodeTree<Msg> {
-        self.node.into_node()
+        // let this = NodeTree::new_tag(&self._element.to_string(), self.cx);
+
+        todo!("apply all collected items to the node");
     }
 }
 
-impl<E, Msg> sealed::Sealed for HtmlElement<E, Msg> where E: sealed::Sealed {}
+impl<'a, E, Msg> sealed::Sealed for HtmlElement<'a, E, Msg> where
+    E: sealed::Sealed
+{
+}
 
 macro_rules! generate_html_tags {
     ($($tag:ident),* $(,)?) => {

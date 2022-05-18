@@ -2,36 +2,10 @@ use core::future::Future;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
+/// Simple macro for brainstorming API designs.
 #[macro_export]
 macro_rules! api_planning {
     ($($tt:tt)*) => {};
-}
-
-#[macro_export]
-macro_rules! cloned {
-    () => {};
-    ([$($tt:tt)*], $expr:expr) => {{
-        cloned!($($tt)*);
-
-        $expr
-    }};
-    ($(,)? mut { $expr:expr } as $ident:ident $($tt:tt)*) => {
-        let mut $ident = ::core::clone::Clone::clone(&$expr);
-        cloned!($($tt)*);
-    };
-    ($(,)? mut $ident:ident $($tt:tt)*) => {
-        let mut $ident = ::core::clone::Clone::clone(&$ident);
-        cloned!($($tt)*);
-    };
-    ($(,)? { $expr:expr } as $ident:ident $($tt:tt)*) => {
-        let $ident = ::core::clone::Clone::clone(&$expr);
-        cloned!($($tt)*);
-    };
-    ($(,)? $ident:ident $($tt:tt)*) => {
-        let $ident = ::core::clone::Clone::clone(&$ident);
-        cloned!($($tt)*);
-    };
-    ($(,)?) => {};
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -22,7 +22,10 @@ use std::{
     fmt,
     lazy::SyncOnceCell,
     ops::Deref,
-    sync::{atomic, Arc, Mutex, Weak},
+    sync::{
+        atomic::{self, AtomicBool, AtomicUsize},
+        Arc, Mutex, Weak,
+    },
 };
 #[cfg(target_arch = "wasm32")]
 use utils::is_browser;
@@ -46,16 +49,22 @@ pub mod prelude {
 //                              Traits
 // =============================================================================
 
+/// Trait to allow async side-effects.
 #[async_trait]
 pub trait Cmd<Msg> {
+    /// Side-effect to perform when the `cmd` is executed.
     async fn perform_cmd(self: Box<Self>) -> Option<Msg>;
 }
 
+/// This trait allows dispatching messages to the app's `update` function.
 trait DispatchMsg<Msg> {
+    /// Dispatch message.
     fn dispatch_msg(self: Arc<Self>, msg: Msg);
 }
 
+/// Trait for converting data into a [`NodeTree`].
 pub trait IntoNode<Msg> {
+    /// Converts `Self` into [`NodeTree`].
     fn into_node(self) -> NodeTree<Msg>;
 }
 
@@ -70,6 +79,7 @@ trait Runtime<Msg> {
 //                           Structs and Impls
 // =============================================================================
 
+/// Main entry point for isomorphic apps.
 pub struct AppElement<M, UF, Msg>(Arc<AppEl<M, UF, Msg>>);
 
 assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
@@ -95,10 +105,14 @@ where
     }
 }
 
+/// This struct exists solely to allow creating a shared reference to an [`AppElement`] instance.
 struct AppEl<M, UF, Msg> {
     model: Mutex<Option<M>>,
     update: UF,
+    // We need to hold onto the root so it doesn't drop and undo all our hard work
     root: SyncOnceCell<NodeTree<Msg>>,
+    /// Counter designed to keep tabs on pending commands preventing us from rendering
+    /// to a string.
     pending_cmds: atomic::AtomicUsize,
 }
 
@@ -217,15 +231,22 @@ where
     }
 }
 
+/// Type of insertion operation when inserting a node relative to another in the
+/// DOM.
 #[derive(Clone, Copy)]
 enum InsertMode {
     Append,
     Before,
 }
 
+/// Data structure which will hold a [`NodeTree`]'s children.
+///
+/// This struct is meant to be held within an [`Arc`].
 #[derive(Educe)]
 #[educe(Default)]
 struct Children<Msg> {
+    /// Context belonging to the parent. This field is in the children because we need
+    /// to be able to get a shared reference to it when accessing children.
     cx: SyncOnceCell<Context<Msg>>,
     children: Mutex<Vec<NodeTree<Msg>>>,
 }
@@ -239,7 +260,7 @@ impl<Msg> Children<Msg> {
     }
 
     #[track_caller]
-    fn msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
+    fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
         self.cx()
             .msg_dispatcher
             .get()
@@ -252,12 +273,8 @@ impl<Msg> Children<Msg> {
 
     #[track_caller]
     fn set_cx(&self, parent_cx: &Context<Msg>) {
-        let mut next_index_lock = parent_cx.next_index.lock().unwrap();
-
-        let index = *next_index_lock;
-        *next_index_lock += 1;
-
-        drop(next_index_lock);
+        let index =
+            parent_cx.next_index.fetch_add(1, atomic::Ordering::Relaxed);
 
         let cx = Context::from_parent_cx(parent_cx, index);
 
@@ -380,18 +397,27 @@ impl<Msg> Children<Msg> {
     fn clear(&self) {
         // We need to reset next_index to keep the id generation
         // consistant
-        *self.cx().next_index.lock().unwrap() = 0;
+        self.cx().next_index.store(0, atomic::Ordering::Relaxed);
 
         self.children.lock().unwrap().clear();
     }
 }
 
+/// Context information needed by the node.
 #[derive(Educe)]
 #[educe(Default, Clone)]
 pub struct Context<Msg> {
+    /// A structurally-stable unique [`Id`], which will always
+    /// produce the same [`Id`] for the same node tree.
     id: Id,
+    /// If true, the current node is dynamic, and must therefore be hydrated from the
+    /// DOM when loaded in the browser. Otherwise, there is no need to try and
+    /// hydrate the node, as it will never change.
+    dynamic: Arc<AtomicBool>,
+    /// Message dispatcher.
     msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
-    next_index: Arc<Mutex<usize>>,
+    /// This is used to aid in generating unique [`Id`]'s.
+    next_index: Arc<AtomicUsize>,
 }
 
 impl<Msg> Context<Msg> {
@@ -407,9 +433,11 @@ impl<Msg> Context<Msg> {
     }
 }
 
+/// Event listener
 pub struct EventHandler {
     #[cfg(target_arch = "wasm32")]
     _handler: Option<gloo::events::EventListener>,
+    /// Used for debugging event listeners.
     location: &'static std::panic::Location<'static>,
 }
 
@@ -431,6 +459,12 @@ impl Clone for EventHandler {
 }
 
 /// Represents a topologically unique and stable ID in a node tree.
+///
+/// The positional parameters are as follows:
+/// - 0: sum of parent's `id` parts 0, 1, and 2
+/// - 1: depth in the tree
+/// - 2: index of child with respect to parent
+/// - 3: custom HTML `id` attribute
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Id(usize, usize, usize, SyncOnceCell<String>);
 
@@ -484,7 +518,7 @@ impl Id {
     }
 
     #[track_caller]
-    fn set_custom_id(&self, custom_id: String) {
+    fn _set_custom_id(&self, custom_id: String) {
         self.3.set(custom_id).expect("cannot set id more than once");
     }
 
@@ -506,8 +540,10 @@ impl Id {
 
 // impl<T> OptionCloneToNone<T> for Option<T> {}
 
+/// Enum of possible node types.
 #[derive(Clone)]
 pub enum NodeKind {
+    /// [`frappe-tea`](self) component.
     Component {
         /// Comment nodes allow for better readability and debugging,
         /// as they allow the user to see what markup belongs to what
@@ -549,6 +585,7 @@ pub enum NodeKind {
         // #[educe(Clone(trait = "OptionCloneToNone"))]
         // unsubscriber: Option<Mutex<Box<dyn Unsubscribe + Send>>>,
     },
+    /// HTML node.
     Tag {
         name: String,
         #[cfg(target_arch = "wasm32")]
@@ -557,6 +594,7 @@ pub enum NodeKind {
         properties: HashMap<String, String>,
         event_handlers: Vec<EventHandler>,
     },
+    /// Text node.
     Text(
         String,
         #[cfg(target_arch = "wasm32")] Option<WasmValue<web_sys::Text>>,
@@ -624,16 +662,48 @@ impl NodeKind {
         }
     }
 
+    /// Creates a new HTML tag.
+    /// The `id` is [`None`] iff the node is a static node.
     #[track_caller]
-    fn new_tag(tag_name: &str) -> Self {
+    fn new_tag(tag_name: &str, id: Option<Id>) -> Self {
         let name = tag_name.to_string();
 
         #[cfg(target_arch = "wasm32")]
         let node = {
-            let tag_node = gloo::utils::document()
-                .create_element(&name)
-                .unwrap_or_else(|_| panic!("failed to create element `{name}`"))
-                .unchecked_into();
+            let tag_node = if is_browser() {
+                // If SSR is enabled, we need to hydrate the node
+                if cfg!(feature = "ssr") {
+                    if let Some(id) = id {
+                        gloo::utils::document()
+                            .get_element_by_id(&id.to_string())
+                            .unwrap_or_else(|| {
+                                panic!("failed to get element with id {}", id)
+                            })
+                            .unchecked_into::<web_sys::Node>()
+                    } else {
+                        gloo::utils::document()
+                            .create_element(&name)
+                            .unwrap_or_else(|_| {
+                                panic!("failed to create element `{name}`")
+                            })
+                            .unchecked_into()
+                    }
+                } else {
+                    gloo::utils::document()
+                        .create_element(&name)
+                        .unwrap_or_else(|_| {
+                            panic!("failed to create element `{name}`")
+                        })
+                        .unchecked_into()
+                }
+            } else {
+                gloo::utils::document()
+                    .create_element(&name)
+                    .unwrap_or_else(|_| {
+                        panic!("failed to create element `{name}`")
+                    })
+                    .unchecked_into()
+            };
 
             Some(WasmValue(tag_node))
         };
@@ -781,6 +851,7 @@ impl NodeKind {
     }
 }
 
+/// Represents a single node with all it's children.
 pub struct NodeTree<Msg> {
     node: NodeKind,
     children: Arc<Children<Msg>>,
@@ -860,10 +931,21 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
-    pub fn new_tag(tag_name: &str) -> Self {
+    pub fn new_tag(tag_name: &str, cx: &Context<Msg>) -> Self {
+        let children = Children::default();
+
+        children.set_cx(cx);
+
+        let cx = children.cx();
+
+        let id = cx.id.to_owned();
+
         Self {
-            node: NodeKind::new_tag(tag_name),
-            children: Arc::new(Children::default()),
+            node: NodeKind::new_tag(
+                tag_name,
+                cx.dynamic.load(atomic::Ordering::Relaxed).then_some(id),
+            ),
+            children: Arc::new(children),
         }
     }
 
@@ -958,6 +1040,7 @@ unsafe impl<T> Sync for WasmValue<T> {}
 //                            Functions
 // =============================================================================
 
+/// Renders the initial state of the app.
 #[cfg(target_arch = "wasm32")]
 fn render<Msg>(
     target: &str,
