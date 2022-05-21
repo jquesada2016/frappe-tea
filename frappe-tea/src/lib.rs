@@ -261,27 +261,24 @@ impl<Msg> Children<Msg> {
 
     #[track_caller]
     fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
-        self.cx()
-            .msg_dispatcher
-            .get()
-            .expect(
-                "attempted to get message dispatcher before connecting to \
-                     the runtime",
-            )
-            .clone()
+        self.cx()._msg_dispatcher()
     }
 
+    /// Sets the context for the child from the provided parent context.
     #[track_caller]
     fn set_cx(&self, parent_cx: &Context<Msg>) {
-        let index =
-            parent_cx.next_index.fetch_add(1, atomic::Ordering::Relaxed);
-
-        let cx = Context::from_parent_cx(parent_cx, index);
+        let cx = Context::from_parent_cx(parent_cx);
 
         self.cx
             .set(cx)
             .ok()
             .expect("cannot set context more than once");
+    }
+
+    /// Marks the current node as being dynamic, and therefore eligable for
+    /// hydration when SSR is enabled.
+    fn set_dynamic(&self) {
+        self.cx().set_dynamic();
     }
 
     fn append(&self, this: &NodeKind, child: NodeTree<Msg>) {
@@ -421,7 +418,10 @@ pub struct Context<Msg> {
 }
 
 impl<Msg> Context<Msg> {
-    fn from_parent_cx(parent_cx: &Context<Msg>, index: usize) -> Self {
+    fn from_parent_cx(parent_cx: &Context<Msg>) -> Self {
+        let index =
+            parent_cx.next_index.fetch_add(1, atomic::Ordering::Relaxed);
+
         let mut this = Context {
             msg_dispatcher: parent_cx.msg_dispatcher.clone(),
             ..Default::default()
@@ -430,6 +430,21 @@ impl<Msg> Context<Msg> {
         this.id.set_id(&parent_cx.id, index);
 
         this
+    }
+
+    fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
+        self.msg_dispatcher
+            .get()
+            .expect(
+                "attempted to get message dispatcher before connecting to \
+                 the runtime",
+            )
+            .clone()
+    }
+
+    /// Marks the current node as dynamic.
+    fn set_dynamic(&self) {
+        self.dynamic.store(true, atomic::Ordering::Relaxed);
     }
 }
 
@@ -517,8 +532,14 @@ impl Id {
         self.2 += index;
     }
 
+    /// Sets a custom `id` for the node.
+    ///
+    /// # Panics
+    /// This function will panic if `id` is an empty string.
     #[track_caller]
-    fn _set_custom_id(&self, custom_id: String) {
+    fn set_custom_id(&self, custom_id: String) {
+        assert!(!custom_id.is_empty());
+
         self.3.set(custom_id).expect("cannot set id more than once");
     }
 
@@ -671,7 +692,7 @@ impl NodeKind {
         #[cfg(target_arch = "wasm32")]
         let node = {
             let tag_node = if is_browser() {
-                // If SSR is enabled, we need to hydrate the node
+                // If SSR is enabled, we need to consider hydrating the node
                 if cfg!(feature = "ssr") {
                     if let Some(id) = id {
                         gloo::utils::document()

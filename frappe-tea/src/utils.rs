@@ -24,6 +24,8 @@ where
     spawn_local(future);
 }
 
+/// Returns true if running in the browser, or an environment supporting
+/// browser operations.
 #[cfg(target_arch = "wasm32")]
 pub fn is_browser() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
@@ -31,20 +33,33 @@ pub fn is_browser() -> bool {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // We need to manually check. We can't use the `web_sys::window` fn
-        // because it relies on the window already existing...ironically...
-        let global_this = js_sys::global();
+        // Memoize the value
+        static mut IS_BROWSER: Option<bool> = None;
 
-        let window =
-            js_sys::Reflect::get(&global_this, &"window".into()).unwrap();
+        if let Some(is_browser) = unsafe { IS_BROWSER } {
+            is_browser
+        } else {
+            // We need to manually check. We can't use the `web_sys::window` fn
+            // because it relies on the window already existing...ironically...
+            let global_this = js_sys::global();
 
-        if window.is_undefined() {
-            return false;
+            let window =
+                js_sys::Reflect::get(&global_this, &"window".into()).unwrap();
+
+            if window.is_undefined() {
+                unsafe { IS_BROWSER = Some(false) };
+
+                return false;
+            }
+
+            let document =
+                js_sys::Reflect::get(&window, &"document".into()).unwrap();
+
+            let is_browser = !document.is_undefined();
+
+            unsafe { IS_BROWSER = Some(is_browser) };
+
+            is_browser
         }
-
-        let document =
-            js_sys::Reflect::get(&window, &"document".into()).unwrap();
-
-        !document.is_undefined()
     }
 }

@@ -38,6 +38,8 @@ where
 
         node.children.set_cx(cx);
 
+        node.children.set_dynamic();
+
         DynChild {
             node,
             observer,
