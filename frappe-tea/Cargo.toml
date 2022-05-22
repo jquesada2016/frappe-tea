@@ -56,6 +56,12 @@ features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.17", features = ["rt"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "Event"
+]
+
 [dev-dependencies]
 criterion = "0.3"
 # Fixes issue with proptest not building on wasm32-unknown-unknwon target

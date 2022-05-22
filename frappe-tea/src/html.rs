@@ -110,7 +110,6 @@ where
 
         let location = std::panic::Location::caller();
 
-        #[cfg(target_arch = "wasm32")]
         let handler = {
             if is_browser() {
                 Some(Box::new(f))
@@ -175,7 +174,7 @@ where
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        for (event, handlers) in self.event_listeners {
+        for (_, handlers) in self.event_listeners {
             for (location, _) in handlers {
                 event_handlers.push(EventHandler { location });
             }

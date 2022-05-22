@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
+#[allow(unused_imports)]
 extern crate clone_macro;
 #[macro_use]
 extern crate educe;
@@ -19,11 +20,12 @@ pub mod html;
 pub mod reactive;
 pub mod testing;
 
+#[cfg(target_arch = "wasm32")]
+use std::ops::Deref;
 use std::{
     collections::HashMap,
     fmt,
     lazy::SyncOnceCell,
-    ops::Deref,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize},
         Arc, Mutex, Weak,
@@ -92,6 +94,7 @@ where
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
+    #[cfg(target_arch = "wasm32")]
     pub fn new<MF, VF, N>(
         target: &str,
         initial_model: MF,
@@ -112,6 +115,7 @@ struct AppEl<M, UF, Msg> {
     model: Mutex<Option<M>>,
     update: UF,
     // We need to hold onto the root so it doesn't drop and undo all our hard work
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
     root: SyncOnceCell<NodeTree<Msg>>,
     /// Counter designed to keep tabs on pending commands preventing us from rendering
     /// to a string.
@@ -188,6 +192,7 @@ where
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
+    #[cfg(target_arch = "wasm32")]
     fn new<MF, VF, N>(
         target: &str,
         initial_model: MF,
@@ -236,6 +241,7 @@ where
 /// Type of insertion operation when inserting a node relative to another in the
 /// DOM.
 #[derive(Clone, Copy)]
+#[cfg(target_arch = "wasm32")]
 enum InsertMode {
     Append,
     Before,
@@ -283,6 +289,7 @@ impl<Msg> Children<Msg> {
         self.cx().set_dynamic();
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
     fn append(&self, this: &NodeKind, child: NodeTree<Msg>) {
         // We only need to insert items into the DOM when we are running
         // in the browser
@@ -434,6 +441,7 @@ impl<Msg> Context<Msg> {
         this
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
     fn msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
         self.msg_dispatcher
             .get()
@@ -688,6 +696,7 @@ impl NodeKind {
     /// Creates a new HTML tag.
     /// The `id` is [`None`] iff the node is a static node.
     #[track_caller]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
     fn new_tag(tag_name: &str, id: Option<Id>) -> Self {
         let name = tag_name.to_string();
 
@@ -1107,9 +1116,4 @@ fn render<Msg>(
     } else {
         todo!()
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn render<Msg>(_target: &str, _child: NodeTree<Msg>) -> NodeTree<Msg> {
-    todo!()
 }

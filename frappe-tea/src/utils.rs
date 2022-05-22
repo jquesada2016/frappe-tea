@@ -26,7 +26,6 @@ where
 
 /// Returns true if running in the browser, or an environment supporting
 /// browser operations.
-#[cfg(target_arch = "wasm32")]
 pub fn is_browser() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     return false;
