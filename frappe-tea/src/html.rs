@@ -1,6 +1,6 @@
 use crate::{
     components::DynChild, prelude::Observable, utils::is_browser, Context,
-    IntoNode, NodeKind, NodeTree,
+    EventHandler, IntoNode, NodeKind, NodeTree,
 };
 use paste::paste;
 use sealed::*;
@@ -140,6 +140,54 @@ where
 
         for child in self.children {
             this.append_child(child);
+        }
+
+        let mut event_handlers = Vec::with_capacity(self.event_listeners.len());
+
+        #[cfg(target_arch = "wasm32")]
+        if let Some(node) = this.node.node() {
+            let msg_dispatcher = self.cx.msg_dispatcher();
+
+            for (event, handlers) in self.event_listeners {
+                for (location, mut f) in handlers {
+                    let handler = gloo::events::EventListener::new(
+                        node,
+                        event.clone(),
+                        clone!([msg_dispatcher], move |e| {
+                            if let Some(msg_dispatcher) =
+                                msg_dispatcher.upgrade()
+                            {
+                                if let Some(msg) = f(e) {
+                                    msg_dispatcher.dispatch_msg(msg);
+                                }
+                            }
+                        }),
+                    );
+
+                    let handler = EventHandler {
+                        location,
+                        _handler: Some(handler),
+                    };
+
+                    event_handlers.push(handler);
+                }
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        for (event, handlers) in self.event_listeners {
+            for (location, _) in handlers {
+                event_handlers.push(EventHandler { location });
+            }
+        }
+
+        match &mut this.node {
+            NodeKind::Tag {
+                event_handlers: eh, ..
+            } => {
+                *eh = event_handlers;
+            }
+            _ => unreachable!(),
         }
 
         this

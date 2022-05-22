@@ -3,6 +3,8 @@
 #[macro_use]
 extern crate async_trait;
 #[macro_use]
+extern crate clone_macro;
+#[macro_use]
 extern crate educe;
 #[macro_use]
 #[allow(unused_imports)]
@@ -261,7 +263,7 @@ impl<Msg> Children<Msg> {
 
     #[track_caller]
     fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
-        self.cx()._msg_dispatcher()
+        self.cx().msg_dispatcher()
     }
 
     /// Sets the context for the child from the provided parent context.
@@ -432,7 +434,7 @@ impl<Msg> Context<Msg> {
         this
     }
 
-    fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
+    fn msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
         self.msg_dispatcher
             .get()
             .expect(
@@ -868,6 +870,19 @@ impl NodeKind {
                 }
             },
             NodeKind::Text(..) => panic!("text nodes cannot have children"),
+        }
+    }
+
+    /// Returns a reference to a [`Node`](web_sys::Node). This function
+    /// will return [`None`] when not running in a browser context.
+    #[cfg(target_arch = "wasm32")]
+    fn node(&self) -> Option<&web_sys::Node> {
+        match self {
+            Self::Component { opening_marker, .. } => {
+                opening_marker.as_ref().map(|m| m.0.unchecked_ref())
+            }
+            Self::Tag { node, .. } => node.as_ref().map(|n| &n.0),
+            Self::Text(_, node) => node.as_ref().map(|n| n.0.unchecked_ref()),
         }
     }
 }
