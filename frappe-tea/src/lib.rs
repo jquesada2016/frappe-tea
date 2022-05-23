@@ -255,38 +255,23 @@ enum InsertMode {
 struct Children<Msg> {
     /// Context belonging to the parent. This field is in the children because we need
     /// to be able to get a shared reference to it when accessing children.
-    cx: SyncOnceCell<Context<Msg>>,
+    cx: Context<Msg>,
     children: Mutex<Vec<NodeTree<Msg>>>,
 }
 
 impl<Msg> Children<Msg> {
-    #[track_caller]
-    fn cx(&self) -> &Context<Msg> {
-        self.cx
-            .get()
-            .expect("attempted to get context before being set")
-    }
-
-    #[track_caller]
-    fn _msg_dispatcher(&self) -> Weak<dyn DispatchMsg<Msg> + Send> {
-        self.cx().msg_dispatcher()
-    }
-
-    /// Sets the context for the child from the provided parent context.
-    #[track_caller]
-    fn set_cx(&self, parent_cx: &Context<Msg>) {
-        let cx = Context::from_parent_cx(parent_cx);
-
-        self.cx
-            .set(cx)
-            .ok()
-            .expect("cannot set context more than once");
+    /// Creates a new children context, initializing the context appropriately.
+    fn new(cx: &Context<Msg>) -> Self {
+        Self {
+            cx: Context::from_parent_cx(cx),
+            ..Default::default()
+        }
     }
 
     /// Marks the current node as being dynamic, and therefore eligable for
     /// hydration when SSR is enabled.
-    fn set_dynamic(&self) {
-        self.cx().set_dynamic();
+    fn _set_dynamic(&self) {
+        self.cx.set_dynamic();
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
@@ -403,7 +388,7 @@ impl<Msg> Children<Msg> {
     fn clear(&self) {
         // We need to reset next_index to keep the id generation
         // consistant
-        self.cx().next_index.store(0, atomic::Ordering::Relaxed);
+        self.cx.next_index.store(0, atomic::Ordering::Relaxed);
 
         self.children.lock().unwrap().clear();
     }
@@ -907,7 +892,7 @@ assert_impl_all!(NodeTree<()>: Send);
 impl<Msg> fmt::Debug for NodeTree<Msg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NodeTree")
-            .field("id", &self.children.cx().id)
+            .field("id", &self.children.cx.id)
             .field("node", &self.node)
             .field("children", &*self.children.children.lock().unwrap())
             .finish()
@@ -921,7 +906,7 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
             NodeKind::Component { .. } => {
                 f.write_fmt(format_args!(
                     r#"<template id="{}o"></template>"#,
-                    self.children.cx().id,
+                    self.children.cx.id,
                 ))?;
 
                 for child in self.children.children.lock().unwrap().iter() {
@@ -930,7 +915,7 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
 
                 f.write_fmt(format_args!(
                     r#"<template id="{}c"></template>"#,
-                    self.children.cx().id,
+                    self.children.cx.id,
                 ))
             }
             NodeKind::Tag {
@@ -969,19 +954,17 @@ where
 }
 
 impl<Msg> NodeTree<Msg> {
-    pub fn new_component(name: &str) -> Self {
+    pub fn new_component(name: &str, cx: &Context<Msg>) -> Self {
         Self {
             node: NodeKind::new_component(name),
-            children: Arc::new(Children::default()),
+            children: Arc::new(Children::new(cx)),
         }
     }
 
     pub fn new_tag(tag_name: &str, cx: &Context<Msg>) -> Self {
-        let children = Children::default();
+        let children = Children::new(cx);
 
-        children.set_cx(cx);
-
-        let cx = children.cx();
+        let cx = &children.cx;
 
         let id = cx.id.to_owned();
 
@@ -994,18 +977,22 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
-    pub fn new_text(text: &str) -> Self {
+    pub fn new_text(text: &str, cx: &Context<Msg>) -> Self {
+        let children = Children::new(cx);
+
         Self {
             node: NodeKind::new_text(text),
-            children: Arc::new(Children::default()),
+            children: Arc::new(children),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn from_raw_node(node: web_sys::Node) -> Self {
+    pub fn from_raw_node(node: web_sys::Node, cx: &Context<Msg>) -> Self {
+        let children = Children::new(cx);
+
         Self {
             node: NodeKind::from_raw_node(node),
-            children: Arc::new(Children::default()),
+            children: Arc::new(children),
         }
     }
 
@@ -1027,7 +1014,7 @@ impl<Msg> Drop for NodeTree<Msg> {
         // We only want to drop if we aren't the root node, since the
         // root node was provided externally, and that would just be rude
 
-        if self.children.cx().id != (0, 0, 0) {
+        if self.children.cx.id != (0, 0, 0) {
             match &self.node {
                 NodeKind::Component {
                     opening_marker,
@@ -1104,11 +1091,7 @@ fn render<Msg>(
             });
 
         // Intern the target node
-        let mut target = NodeTree::from_raw_node(target.unchecked_into());
-
-        // We need to manually set the cx so that the root has id
-        // 0-0-0
-        target.children.cx.set(cx).ok().unwrap();
+        let mut target = NodeTree::from_raw_node(target.unchecked_into(), &cx);
 
         target.append_child(child);
 

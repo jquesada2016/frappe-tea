@@ -35,7 +35,7 @@ where
 {
     pub fn new(element: E, cx: &Context<Msg>) -> Self {
         Self {
-            cx: Context::from_parent_cx(cx),
+            cx: cx.to_owned(),
             element,
             children: vec![],
             event_listeners: HashMap::default(),
@@ -61,9 +61,7 @@ where
     pub fn text(mut self, text: impl ToString) -> Self {
         let text = text.to_string();
 
-        let text_node = NodeTree::new_text(&text).into_node();
-
-        text_node.children.set_cx(&self.cx);
+        let text_node = NodeTree::new_text(&text, &self.cx).into_node();
 
         self.children.push(text_node);
 
@@ -90,9 +88,9 @@ where
         O: Observable,
         N: IntoNode<Msg>,
     {
-        let dyn_child = DynChild::new(bool_observer, child_fn);
+        let dyn_child = DynChild::new(&self.cx, bool_observer, child_fn);
 
-        let dyn_child = dyn_child.cx(&self.cx).into_node();
+        let dyn_child = dyn_child.into_node();
 
         self.children.push(dyn_child);
 

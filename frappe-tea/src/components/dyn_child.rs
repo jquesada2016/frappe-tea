@@ -2,54 +2,28 @@ use std::sync::Arc;
 
 use crate::{prelude::Observable, Context, IntoNode, NodeTree};
 
-use super::{Ctx, MissingCtx};
-
-pub struct DynChild<State, Msg, O, F> {
-    node: NodeTree<Msg>,
+pub struct DynChild<Msg, O, F> {
+    cx: Context<Msg>,
     observer: O,
     child_fn: F,
-    _state: State,
 }
 
-impl<Msg, O, F, N> DynChild<MissingCtx, Msg, O, F>
+impl<Msg, O, F, N> DynChild<Msg, O, F>
 where
     O: Observable,
     F: FnMut(&Context<Msg>, O::Item) -> N + 'static,
     N: IntoNode<Msg>,
 {
-    pub fn new(bool_observer: O, child_fn: F) -> Self {
-        let node = NodeTree::new_component("DynNode");
-
+    pub fn new(cx: &Context<Msg>, bool_observer: O, child_fn: F) -> Self {
         Self {
-            node,
+            cx: Context::from_parent_cx(cx),
             observer: bool_observer,
             child_fn,
-            _state: MissingCtx,
-        }
-    }
-
-    pub fn cx(self, cx: &Context<Msg>) -> DynChild<Ctx, Msg, O, F> {
-        let Self {
-            node,
-            observer,
-            child_fn,
-            _state: _,
-        } = self;
-
-        node.children.set_cx(cx);
-
-        node.children.set_dynamic();
-
-        DynChild {
-            node,
-            observer,
-            child_fn,
-            _state: Ctx,
         }
     }
 }
 
-impl<Msg, O, F, N> IntoNode<Msg> for DynChild<Ctx, Msg, O, F>
+impl<Msg, O, F, N> IntoNode<Msg> for DynChild<Msg, O, F>
 where
     Msg: 'static,
     O: Observable,
@@ -58,11 +32,12 @@ where
 {
     fn into_node(self) -> NodeTree<Msg> {
         let Self {
-            node,
+            cx,
             observer,
             mut child_fn,
-            _state: _,
         } = self;
+
+        let node = NodeTree::new_component("DynChild", &cx);
 
         let this = node.node.clone();
 
@@ -70,7 +45,7 @@ where
 
         let children = Arc::downgrade(&children);
 
-        let cx = node.children.cx().clone();
+        let cx = node.children.cx.clone();
 
         observer.subscribe(Box::new(move |v| {
             if let Some(children) = children.upgrade() {
