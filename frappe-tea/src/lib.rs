@@ -88,15 +88,26 @@ pub struct AppElement<M, UF, Msg>(Arc<AppEl<M, UF, Msg>>);
 
 assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
+/// Renders the state of the app into an HTML string.
+impl<M, UF, Msg> fmt::Display for AppElement<M, UF, Msg>
+where
+    M: Send + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
+    Msg: Send + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.root.get().unwrap().fmt(f)
+    }
+}
+
 impl<M, UF, Msg> AppElement<M, UF, Msg>
 where
     M: Send + 'static,
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
-    #[cfg(target_arch = "wasm32")]
     pub fn new<MF, VF, N>(
-        target: &str,
+        #[cfg(target_arch = "wasm32")] target: &str,
         initial_model: MF,
         update: UF,
         view: VF,
@@ -106,7 +117,13 @@ where
         VF: FnOnce(&M, &Context<Msg>) -> N,
         N: IntoNode<Msg>,
     {
-        Self(AppEl::new(target, initial_model, update, view))
+        Self(AppEl::new(
+            #[cfg(target_arch = "wasm32")]
+            target,
+            initial_model,
+            update,
+            view,
+        ))
     }
 }
 
@@ -192,9 +209,8 @@ where
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
     Msg: Send + 'static,
 {
-    #[cfg(target_arch = "wasm32")]
     fn new<MF, VF, N>(
-        target: &str,
+        #[cfg(target_arch = "wasm32")] target: &str,
         initial_model: MF,
         update: UF,
         view: VF,
@@ -218,15 +234,20 @@ where
 
         let cx = Context {
             msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
+            hydrating: Arc::new(AtomicBool::new(true)),
             ..Default::default()
         };
 
         let child =
             view(this.model.lock().unwrap().as_ref().unwrap(), &cx).into_node();
 
+        cx.hydrating.store(false, atomic::Ordering::Relaxed);
+
+        #[cfg(target_arch = "wasm32")]
         let root_node = render(target, child, cx);
 
-        debug!("{root_node}");
+        #[cfg(not(target_arch = "wasm32"))]
+        let root_node = child;
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -280,7 +301,11 @@ impl<Msg> Children<Msg> {
         // in the browser
         #[cfg(target_arch = "wasm32")]
         if is_browser() {
-            this.append(&child);
+            // We only want to actually insert a node into the DOM after the hydrating
+            // phase, otherwise, we would be duplicating every node already existing
+            if self.cx.hydrating.load(atomic::Ordering::Relaxed) {
+                this.append(&child);
+            }
         }
 
         self.children.lock().unwrap().push(child);
@@ -405,6 +430,7 @@ pub struct Context<Msg> {
     /// DOM when loaded in the browser. Otherwise, there is no need to try and
     /// hydrate the node, as it will never change.
     dynamic: Arc<AtomicBool>,
+    hydrating: Arc<AtomicBool>,
     /// Message dispatcher.
     msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
     /// This is used to aid in generating unique [`Id`]'s.
@@ -418,6 +444,7 @@ impl<Msg> Context<Msg> {
 
         let mut this = Context {
             msg_dispatcher: parent_cx.msg_dispatcher.clone(),
+            hydrating: parent_cx.hydrating.clone(),
             ..Default::default()
         };
 
@@ -573,25 +600,8 @@ pub enum NodeKind {
         #[cfg(target_arch = "wasm32")]
         opening_marker: Option<WasmValue<web_sys::Comment>>,
 
-        /// All component-local state will be serialized into data
-        /// attributes within an empty `<template />`. Since comments
-        /// cannot have attributes, we therefore need a lightweight
-        /// tag that will cause as little performance impact as possible.
-        /// To the best of my knowledge, the `<template />` fits the bill.
-        #[cfg(all(target_arch = "wasm32", feature = "hmr"))]
-        state_marker: Option<WasmValue<web_sys::Node>>,
-
         /// Component name.
         name: String,
-
-        /// When on the server, all local state must be serialized
-        /// and send down to the client in order to allow resuming
-        /// the app.
-        /// When HMR is enabled, we need to constantly be serializing
-        /// changes to local state in order to be able to resume from
-        /// where we left off the next time the wasm module is loaded.
-        #[cfg(any(not(target_arch = "wasm32"), feature = "hmr"))]
-        local_state: Vec<String>,
 
         #[cfg(target_arch = "wasm32")]
         closing_marker: Option<WasmValue<web_sys::Comment>>,
@@ -632,47 +642,76 @@ impl fmt::Debug for NodeKind {
 }
 
 impl NodeKind {
-    fn new_component(name: &str) -> Self {
+    fn new_component<Msg>(name: &str, cx: &Context<Msg>) -> Self {
         let name = name.to_string();
 
         #[cfg(target_arch = "wasm32")]
         let (opening_marker, closing_marker) = {
             if is_browser() {
-                let opening_marker = gloo::utils::document()
-                    .create_comment(&format!(" <{name}> "));
-                let closing_marker = gloo::utils::document()
-                    .create_comment(&format!(" </{name}> "));
+                if cfg!(feature = "ssr")
+                    && cx.hydrating.load(atomic::Ordering::Relaxed)
+                {
+                    // For debuggability and presentation, we want to swap out
+                    // the SSR generated `<template>` tags for comment nodes
+                    let opening_marker = gloo::utils::document()
+                        .create_comment(&format!(" <{name}> "));
+                    let closing_marker = gloo::utils::document()
+                        .create_comment(&format!(" </{name}> "));
 
-                (
-                    Some(WasmValue(opening_marker)),
-                    Some(WasmValue(closing_marker)),
-                )
+                    let og_opening_marker = gloo::utils::document()
+                        .get_element_by_id(&format!("{}o", cx.id))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "could not find opening marker for `{name}` \
+                                component with id `{}`",
+                                cx.id
+                            )
+                        });
+                    let og_closing_marker = gloo::utils::document()
+                        .get_element_by_id(&format!("{}c", cx.id))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "could not find closing marker for `{name}` \
+                                component with id `{}`",
+                                cx.id
+                            )
+                        });
+
+                    // Perform the swap
+                    og_opening_marker
+                        .before_with_node_1(&opening_marker)
+                        .expect("failed to insert node before");
+                    og_closing_marker
+                        .before_with_node_1(&closing_marker)
+                        .expect("failed to insert node before");
+
+                    og_opening_marker.remove();
+                    og_closing_marker.remove();
+
+                    (
+                        Some(WasmValue(opening_marker)),
+                        Some(WasmValue(closing_marker)),
+                    )
+                } else {
+                    let opening_marker = gloo::utils::document()
+                        .create_comment(&format!(" <{name}> "));
+                    let closing_marker = gloo::utils::document()
+                        .create_comment(&format!(" </{name}> "));
+
+                    (
+                        Some(WasmValue(opening_marker)),
+                        Some(WasmValue(closing_marker)),
+                    )
+                }
             } else {
                 (None, None)
-            }
-        };
-
-        #[cfg(all(target_arch = "wasm32", feature = "hmr"))]
-        let state_marker = {
-            if is_browser() {
-                let template = gloo::utils::document()
-                    .create_element("template")
-                    .unwrap()
-                    .unchecked_into();
-
-                Some(WasmValue(template))
-            } else {
-                None
             }
         };
 
         Self::Component {
             #[cfg(target_arch = "wasm32")]
             opening_marker,
-            #[cfg(all(target_arch = "wasm32", feature = "hmr"))]
-            state_marker,
             name,
-            local_state: vec![],
             #[cfg(target_arch = "wasm32")]
             closing_marker,
         }
@@ -682,47 +721,40 @@ impl NodeKind {
     /// The `id` is [`None`] iff the node is a static node.
     #[track_caller]
     #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
-    fn new_tag(tag_name: &str, id: Option<Id>) -> Self {
+    fn new_tag<Msg>(tag_name: &str, cx: &Context<Msg>) -> Self {
         let name = tag_name.to_string();
 
         #[cfg(target_arch = "wasm32")]
-        let node = {
-            let tag_node = if is_browser() {
-                // If SSR is enabled, we need to consider hydrating the node
-                if cfg!(feature = "ssr") {
-                    if let Some(id) = id {
-                        gloo::utils::document()
-                            .get_element_by_id(&id.to_string())
-                            .unwrap_or_else(|| {
-                                panic!("failed to get element with id {}", id)
-                            })
-                            .unchecked_into::<web_sys::Node>()
-                    } else {
-                        gloo::utils::document()
-                            .create_element(&name)
-                            .unwrap_or_else(|_| {
-                                panic!("failed to create element `{name}`")
-                            })
-                            .unchecked_into()
-                    }
-                } else {
+        // We only need to hydrate within the hydration phase
+        let node = if is_browser() {
+            if cfg!(feature = "ssr")
+                && cx.hydrating.load(atomic::Ordering::Relaxed)
+                && cx.dynamic.load(atomic::Ordering::Relaxed)
+            {
+                Some(WasmValue(
+                    gloo::utils::document()
+                        .get_element_by_id(&cx.id.to_string())
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "element with id `{}` not found during \
+                                hydration",
+                                cx.id
+                            )
+                        })
+                        .unchecked_into(),
+                ))
+            } else {
+                Some(WasmValue(
                     gloo::utils::document()
                         .create_element(&name)
-                        .unwrap_or_else(|_| {
-                            panic!("failed to create element `{name}`")
+                        .unwrap_or_else(|err| {
+                            panic!("failed to create `{name}` tag: {err:#?}")
                         })
-                        .unchecked_into()
-                }
-            } else {
-                gloo::utils::document()
-                    .create_element(&name)
-                    .unwrap_or_else(|_| {
-                        panic!("failed to create element `{name}`")
-                    })
-                    .unchecked_into()
-            };
-
-            Some(WasmValue(tag_node))
+                        .unchecked_into(),
+                ))
+            }
+        } else {
+            None
         };
 
         Self::Tag {
@@ -735,7 +767,7 @@ impl NodeKind {
         }
     }
 
-    fn new_text(text: &str) -> Self {
+    fn new_text(text: &str, id: Option<Id>) -> Self {
         let text = text.to_string();
 
         #[cfg(target_arch = "wasm32")]
@@ -922,12 +954,22 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
                 name, attributes, ..
             } => {
                 if attributes.is_empty() {
-                    f.write_fmt(format_args!("<{name}>"))?;
+                    f.write_fmt(format_args!(
+                        r#"<{name} id="{}">"#,
+                        self.children.cx.id
+                    ))?;
                 } else {
-                    f.write_fmt(format_args!("<{name} "))?;
+                    f.write_fmt(format_args!(
+                        r#"<{name} id="{}" "#,
+                        self.children.cx.id
+                    ))?;
 
-                    for (name, val) in attributes {
+                    for (i, (name, val)) in attributes.into_iter().enumerate() {
                         f.write_fmt(format_args!(r#"{name}="{val}""#))?;
+
+                        if i != attributes.len() {
+                            f.write_str(" ")?;
+                        }
                     }
 
                     f.write_str(">")?;
@@ -955,24 +997,19 @@ where
 
 impl<Msg> NodeTree<Msg> {
     pub fn new_component(name: &str, cx: &Context<Msg>) -> Self {
+        let children = Children::new(cx);
+
         Self {
-            node: NodeKind::new_component(name),
-            children: Arc::new(Children::new(cx)),
+            node: NodeKind::new_component(name, &children.cx),
+            children: Arc::new(children),
         }
     }
 
     pub fn new_tag(tag_name: &str, cx: &Context<Msg>) -> Self {
         let children = Children::new(cx);
 
-        let cx = &children.cx;
-
-        let id = cx.id.to_owned();
-
         Self {
-            node: NodeKind::new_tag(
-                tag_name,
-                cx.dynamic.load(atomic::Ordering::Relaxed).then_some(id),
-            ),
+            node: NodeKind::new_tag(tag_name, &children.cx),
             children: Arc::new(children),
         }
     }
@@ -981,7 +1018,14 @@ impl<Msg> NodeTree<Msg> {
         let children = Children::new(cx);
 
         Self {
-            node: NodeKind::new_text(text),
+            node: NodeKind::new_text(
+                text,
+                children
+                    .cx
+                    .dynamic
+                    .load(atomic::Ordering::Relaxed)
+                    .then(|| children.cx.id.clone()),
+            ),
             children: Arc::new(children),
         }
     }
@@ -1018,18 +1062,11 @@ impl<Msg> Drop for NodeTree<Msg> {
             match &self.node {
                 NodeKind::Component {
                     opening_marker,
-                    state_marker,
                     closing_marker,
                     ..
                 } => {
                     if let Some(opening_marker) = opening_marker {
                         opening_marker
-                            .unchecked_ref::<web_sys::Element>()
-                            .remove();
-                    }
-
-                    if let Some(state_marker) = state_marker {
-                        state_marker
                             .unchecked_ref::<web_sys::Element>()
                             .remove();
                     }

@@ -16,11 +16,10 @@ name = "lib"
 harness = false
 
 [features]
-default = ["ssr", "hmr", "web-tests"]
+default = []
 ssr = ["base64", "bincode", "serde"]
 web-tests = []
 node-tests = []
-hmr = ["base64", "bincode", "serde"]
 
 [dependencies]
 async-trait = "0.1"
