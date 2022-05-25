@@ -31,9 +31,7 @@ use std::{
         Arc, Mutex, Weak,
     },
 };
-#[cfg(target_arch = "wasm32")]
-use utils::is_browser;
-use utils::spawn;
+use utils::{is_browser, spawn};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
@@ -661,6 +659,7 @@ impl fmt::Debug for NodeKind {
 }
 
 impl NodeKind {
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_variables))]
     fn new_component<Msg>(name: &str, cx: &Context<Msg>) -> Self {
         let name = name.to_string();
 

@@ -136,6 +136,7 @@ where
     E: ToString + Send + Sync + 'static,
 {
     fn into_node(self) -> NodeTree<Msg> {
+        #[cfg(target_arch = "wasm322")]
         let msg_dispatcher = self.cx.msg_dispatcher();
 
         let mut this = NodeTree::new_tag(&self.element.to_string(), self.cx);
