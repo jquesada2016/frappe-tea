@@ -37,7 +37,7 @@ where
             mut child_fn,
         } = self;
 
-        let node = NodeTree::new_component("DynChild", &cx);
+        let node = NodeTree::new_component("DynChild", cx);
 
         let this = node.node.clone();
 

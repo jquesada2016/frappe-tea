@@ -35,7 +35,7 @@ where
 {
     pub fn new(element: E, cx: &Context<Msg>) -> Self {
         Self {
-            cx: cx.to_owned(),
+            cx: Context::from_parent_cx(cx),
             element,
             children: vec![],
             event_listeners: HashMap::default(),
@@ -61,7 +61,9 @@ where
     pub fn text(mut self, text: impl ToString) -> Self {
         let text = text.to_string();
 
-        let text_node = NodeTree::new_text(&text, &self.cx).into_node();
+        let text_node =
+            NodeTree::new_text(&text, Context::from_parent_cx(&self.cx))
+                .into_node();
 
         self.children.push(text_node);
 
@@ -81,14 +83,14 @@ where
 
     pub fn dyn_child<O, N>(
         mut self,
-        bool_observer: O,
+        observer: O,
         child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
     ) -> Self
     where
         O: Observable,
         N: IntoNode<Msg>,
     {
-        let dyn_child = DynChild::new(&self.cx, bool_observer, child_fn);
+        let dyn_child = DynChild::new(&self.cx, observer, child_fn);
 
         let dyn_child = dyn_child.into_node();
 
@@ -106,6 +108,7 @@ where
         // we need to be able to attach the event listener
         self.cx.set_dynamic();
 
+        // For debugging
         let location = std::panic::Location::caller();
 
         let handler = {
@@ -133,18 +136,20 @@ where
     E: ToString + Send + Sync + 'static,
 {
     fn into_node(self) -> NodeTree<Msg> {
-        let mut this = NodeTree::new_tag(&self.element.to_string(), &self.cx);
+        let msg_dispatcher = self.cx.msg_dispatcher();
+
+        let mut this = NodeTree::new_tag(&self.element.to_string(), self.cx);
 
         for child in self.children {
             this.append_child(child);
         }
 
+        // We need to save the event handlers, otherwise they will be unregistered if
+        // allowed to drop
         let mut event_handlers = Vec::with_capacity(self.event_listeners.len());
 
         #[cfg(target_arch = "wasm32")]
         if let Some(node) = this.node.node() {
-            let msg_dispatcher = self.cx.msg_dispatcher();
-
             for (event, handlers) in self.event_listeners {
                 for (location, mut f) in handlers {
                     let handler = gloo::events::EventListener::new(

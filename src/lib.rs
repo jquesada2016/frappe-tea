@@ -88,6 +88,17 @@ pub struct AppElement<M, UF, Msg>(Arc<AppEl<M, UF, Msg>>);
 
 assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
+impl<M, UF, Msg> fmt::Debug for AppElement<M, UF, Msg>
+where
+    M: Send + 'static,
+    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
+    Msg: Send + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.root.get().unwrap().fmt(f)
+    }
+}
+
 /// Renders the state of the app into an HTML string.
 impl<M, UF, Msg> fmt::Display for AppElement<M, UF, Msg>
 where
@@ -234,20 +245,27 @@ where
 
         let cx = Context {
             msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
-            hydrating: Arc::new(AtomicBool::new(true)),
             ..Default::default()
         };
+
+        #[cfg(feature = "ssr")]
+        cx.hydrating.store(true, atomic::Ordering::Relaxed);
 
         let child =
             view(this.model.lock().unwrap().as_ref().unwrap(), &cx).into_node();
 
+        #[cfg(feature = "ssr")]
         cx.hydrating.store(false, atomic::Ordering::Relaxed);
 
-        #[cfg(target_arch = "wasm32")]
-        let root_node = render(target, child, cx);
+        let root_node = if is_browser() {
+            #[cfg(not(target_arch = "wasm32"))]
+            unreachable!();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let root_node = child;
+            #[cfg(target_arch = "wasm32")]
+            render(target, child, cx)
+        } else {
+            child
+        };
 
         if let Some(cmd) = cmd {
             spawn(this.clone().perform_cmd(cmd));
@@ -282,9 +300,9 @@ struct Children<Msg> {
 
 impl<Msg> Children<Msg> {
     /// Creates a new children context, initializing the context appropriately.
-    fn new(cx: &Context<Msg>) -> Self {
+    fn new(cx: Context<Msg>) -> Self {
         Self {
-            cx: Context::from_parent_cx(cx),
+            cx,
             ..Default::default()
         }
     }
@@ -303,7 +321,7 @@ impl<Msg> Children<Msg> {
         if is_browser() {
             // We only want to actually insert a node into the DOM after the hydrating
             // phase, otherwise, we would be duplicating every node already existing
-            if self.cx.hydrating.load(atomic::Ordering::Relaxed) {
+            if !self.cx.hydrating.load(atomic::Ordering::Relaxed) {
                 this.append(&child);
             }
         }
@@ -421,7 +439,7 @@ impl<Msg> Children<Msg> {
 
 /// Context information needed by the node.
 #[derive(Educe)]
-#[educe(Default, Clone)]
+#[educe(Default, Clone, Debug)]
 pub struct Context<Msg> {
     /// A structurally-stable unique [`Id`], which will always
     /// produce the same [`Id`] for the same node tree.
@@ -432,6 +450,7 @@ pub struct Context<Msg> {
     dynamic: Arc<AtomicBool>,
     hydrating: Arc<AtomicBool>,
     /// Message dispatcher.
+    #[educe(Debug(ignore))]
     msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
     /// This is used to aid in generating unique [`Id`]'s.
     next_index: Arc<AtomicUsize>,
@@ -727,6 +746,8 @@ impl NodeKind {
         #[cfg(target_arch = "wasm32")]
         // We only need to hydrate within the hydration phase
         let node = if is_browser() {
+            // Handle the case where SSR is enabled, and the current node is dynamic
+            // and must therefore be recovered from the DOM, where it already exists
             if cfg!(feature = "ssr")
                 && cx.hydrating.load(atomic::Ordering::Relaxed)
                 && cx.dynamic.load(atomic::Ordering::Relaxed)
@@ -743,7 +764,18 @@ impl NodeKind {
                         })
                         .unchecked_into(),
                 ))
-            } else {
+            }
+            // Handle the case where SSR is enabled but the node is not dynamic, hence,
+            // already exists in the DOM, and no new node should be created to represent
+            // this node
+            else if cfg!(feature = "ssr")
+                && cx.hydrating.load(atomic::Ordering::Relaxed)
+                && !cx.dynamic.load(atomic::Ordering::Relaxed)
+            {
+                None
+            }
+            // Handle the case where SSR is disabled
+            else {
                 Some(WasmValue(
                     gloo::utils::document()
                         .create_element(&name)
@@ -872,27 +904,29 @@ impl NodeKind {
                 // Since components don't have an actual tag, we
                 // need to recursively insert all component children
                 NodeKind::Component { .. } => {
-                    Children::recurseively_append_component_children(
-                        &*parent_node.as_ref().unwrap(),
-                        child,
-                        InsertMode::Append,
-                    )
+                    if let Some(WasmValue(parent_node)) = parent_node {
+                        Children::recurseively_append_component_children(
+                            parent_node,
+                            child,
+                            InsertMode::Append,
+                        )
+                    }
                 }
                 NodeKind::Tag {
                     node: child_node, ..
                 } => {
-                    parent_node
-                        .as_ref()
-                        .unwrap()
-                        .append_child(child_node.as_ref().unwrap())
-                        .unwrap();
+                    if let Some(WasmValue(parent_node)) = parent_node {
+                        if let Some(WasmValue(child_node)) = child_node {
+                            parent_node.append_child(child_node).unwrap();
+                        }
+                    }
                 }
                 NodeKind::Text(_, child_text) => {
-                    parent_node
-                        .as_ref()
-                        .unwrap()
-                        .append_child(child_text.as_ref().unwrap())
-                        .unwrap();
+                    if let Some(WasmValue(parent_node)) = parent_node {
+                        if let Some(WasmValue(child_text)) = child_text {
+                            parent_node.append_child(child_text).unwrap();
+                        }
+                    }
                 }
             },
             NodeKind::Text(..) => panic!("text nodes cannot have children"),
@@ -964,7 +998,7 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
                         self.children.cx.id
                     ))?;
 
-                    for (i, (name, val)) in attributes.into_iter().enumerate() {
+                    for (i, (name, val)) in attributes.iter().enumerate() {
                         f.write_fmt(format_args!(r#"{name}="{val}""#))?;
 
                         if i != attributes.len() {
@@ -996,7 +1030,7 @@ where
 }
 
 impl<Msg> NodeTree<Msg> {
-    pub fn new_component(name: &str, cx: &Context<Msg>) -> Self {
+    pub fn new_component(name: &str, cx: Context<Msg>) -> Self {
         let children = Children::new(cx);
 
         Self {
@@ -1005,7 +1039,7 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
-    pub fn new_tag(tag_name: &str, cx: &Context<Msg>) -> Self {
+    pub fn new_tag(tag_name: &str, cx: Context<Msg>) -> Self {
         let children = Children::new(cx);
 
         Self {
@@ -1014,7 +1048,7 @@ impl<Msg> NodeTree<Msg> {
         }
     }
 
-    pub fn new_text(text: &str, cx: &Context<Msg>) -> Self {
+    pub fn new_text(text: &str, cx: Context<Msg>) -> Self {
         let children = Children::new(cx);
 
         Self {
@@ -1031,7 +1065,7 @@ impl<Msg> NodeTree<Msg> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn from_raw_node(node: web_sys::Node, cx: &Context<Msg>) -> Self {
+    pub fn from_raw_node(node: web_sys::Node, cx: Context<Msg>) -> Self {
         let children = Children::new(cx);
 
         Self {
@@ -1081,6 +1115,22 @@ impl<Msg> Drop for NodeTree<Msg> {
                     if let Some(node) = node {
                         node.unchecked_ref::<web_sys::Element>().remove()
                     }
+                    // If there is no node because the node is not dynamic,
+                    // then we still need to remove it from the DOM, so query it,
+                    // and remove it
+                    else if !self
+                        .children
+                        .cx
+                        .dynamic
+                        .load(atomic::Ordering::Relaxed)
+                        && is_browser()
+                    {
+                        if let Some(node) = gloo::utils::document()
+                            .get_element_by_id(&self.children.cx.id.to_string())
+                        {
+                            node.remove();
+                        }
+                    }
                 }
                 NodeKind::Text(_, text) => {
                     if let Some(text) = text {
@@ -1118,22 +1168,30 @@ fn render<Msg>(
 ) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
-        let target = gloo::utils::document()
-            .query_selector(target)
-            .unwrap_or_else(|_| {
-                panic!("failed to query the document for `{target}`")
-            })
-            .unwrap_or_else(|| {
-                panic!("could not find the node with the query `{target}`")
-            });
+        let target = if cfg!(feature = "ssr") {
+            gloo::utils::document()
+                .get_element_by_id(&cx.id.to_string())
+                .expect("failed to find root node while hydrating")
+        } else {
+            gloo::utils::document()
+                .query_selector(target)
+                .unwrap_or_else(|_| {
+                    panic!("failed to query the document for `{target}`")
+                })
+                .unwrap_or_else(|| {
+                    panic!("could not find the node with the query `{target}`")
+                })
+        };
 
         // Intern the target node
-        let mut target = NodeTree::from_raw_node(target.unchecked_into(), &cx);
+        let mut target = NodeTree::from_raw_node(target.unchecked_into(), cx);
+
+        let children = Arc::get_mut(&mut target.children).unwrap();
 
         target.append_child(child);
 
         target
     } else {
-        todo!()
+        unreachable!()
     }
 }
