@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{reactive::Observable, Context, IntoNode, NodeTree};
 
 pub struct If<State, Msg> {
@@ -13,7 +15,7 @@ impl<Msg> If<(), Msg> {
     ) -> If<Simple<O, F>, Msg>
     where
         O: Observable<Item = bool>,
-        F: FnMut(O::Item) -> N,
+        F: FnMut(&Context<Msg>) -> N,
     {
         let cx = Context::from_parent_cx(cx);
         cx.set_dynamic();
@@ -35,14 +37,35 @@ pub struct Simple<O, F> {
 
 impl<Msg, O, F, N> IntoNode<Msg> for If<Simple<O, F>, Msg>
 where
+    Msg: 'static,
     O: Observable<Item = bool>,
-    F: FnMut(O::Item) -> N,
+    F: FnMut(&Context<Msg>) -> N + 'static,
     N: IntoNode<Msg>,
 {
     fn into_node(self) -> NodeTree<Msg> {
-        let this = NodeTree::new_component("If", &self.cx);
+        let mut children_fn = self.state.children_fn;
+        let cx = self.cx;
 
-        todo!()
+        let this = NodeTree::new_component("If", cx.clone());
+
+        let children = Arc::downgrade(&this.children);
+        let node = this.node.clone();
+
+        self.state.observer.subscribe(Box::new(move |b| {
+            if let Some(children) = children.upgrade() {
+                if b {
+                    children.clear();
+
+                    let child = children_fn(&cx).into_node();
+
+                    children.append(&node, child);
+                } else {
+                    children.clear();
+                }
+            }
+        }));
+
+        this
     }
 }
 

@@ -1,9 +1,9 @@
 mod dyn_child;
-// mod if_;
+mod if_;
 
 use crate::NodeTree;
 pub use dyn_child::*;
-// pub use if_::*;
+pub use if_::*;
 use std::marker::PhantomData;
 
 // =============================================================================

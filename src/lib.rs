@@ -798,7 +798,7 @@ impl NodeKind {
         }
     }
 
-    fn new_text(text: &str, id: Option<Id>) -> Self {
+    fn new_text(text: &str, _id: Option<Id>) -> Self {
         let text = text.to_string();
 
         #[cfg(target_arch = "wasm32")]
@@ -1167,25 +1167,17 @@ fn render<Msg>(
 ) -> NodeTree<Msg> {
     // Get the target node
     if is_browser() {
-        let target = if cfg!(feature = "ssr") {
-            gloo::utils::document()
-                .get_element_by_id(&cx.id.to_string())
-                .expect("failed to find root node while hydrating")
-        } else {
-            gloo::utils::document()
-                .query_selector(target)
-                .unwrap_or_else(|_| {
-                    panic!("failed to query the document for `{target}`")
-                })
-                .unwrap_or_else(|| {
-                    panic!("could not find the node with the query `{target}`")
-                })
-        };
+        let target = gloo::utils::document()
+            .query_selector(target)
+            .unwrap_or_else(|_| {
+                panic!("failed to query the document for `{target}`")
+            })
+            .unwrap_or_else(|| {
+                panic!("could not find the node with the query `{target}`")
+            });
 
         // Intern the target node
         let mut target = NodeTree::from_raw_node(target.unchecked_into(), cx);
-
-        let children = Arc::get_mut(&mut target.children).unwrap();
 
         target.append_child(child);
 
