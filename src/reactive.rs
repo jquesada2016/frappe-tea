@@ -17,20 +17,26 @@ pub trait Observable {
         f: Box<dyn FnMut(Self::Item)>,
     ) -> Option<Box<dyn Unsubscribe>>;
 
-    fn with(&self, f: Box<dyn FnOnce(&Self::Item)>)
+    fn with(&self, f: Box<dyn FnOnce(Option<&Self::Item>)>)
     where
         Self::Item: 'static,
     {
-        let mut f = Some(f);
+        let f = Rc::new(RefCell::new(Some(f)));
 
         // We just need to sub/unsub
-        let unsub = self.subscribe(Box::new(move |v| {
-            let f = f.take().unwrap();
+        let unsub = self.subscribe(Box::new(clone!([f], move |v| {
+            f.borrow_mut().take().unwrap()(Some(&v));
+        })));
 
-            f(&v);
-        }));
-
-        unsub.unwrap().unsubscribe();
+        // If Unsub is Some, then we just need to unsub
+        if let Some(unsub) = unsub {
+            unsub.unsubscribe();
+        }
+        // If Unsub is None, then we need to notify the caller we Source has
+        // already dropped
+        else {
+            f.borrow_mut().take().unwrap()(None);
+        }
     }
 
     fn map<F, B>(self, f: F) -> Map<Self, F>
