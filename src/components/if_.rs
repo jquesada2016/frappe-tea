@@ -307,16 +307,16 @@ fn generate_if_blocks<Msg>(
                 // If we can't find any, then render the else block
                 // and update the last rendered block
                 else if last_block_rendered_borrow.is_some() {
-                    if let (Some(else_block), Some(children))
-                        = (&else_fn, children.upgrade()) {
+                    if let Some(children) = children.upgrade() {
                         children.clear();
-
-                        let child =
-                            else_block.borrow_mut()(&cx);
-
-                        children.append(&this_node, child);
-
                         *last_block_rendered_borrow = None;
+
+                        if let Some(else_block) = &else_fn {
+                            let child =
+                                else_block.borrow_mut()(&cx);
+
+                            children.append(&this_node, child);
+                        }
                     }
                 }
             }
