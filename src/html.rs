@@ -70,8 +70,9 @@ where
         self
     }
 
-    pub fn child<N>(mut self, child_fn: impl FnOnce(&Context<Msg>) -> N) -> Self
+    pub fn child<F, N>(mut self, child_fn: F) -> Self
     where
+        F: FnOnce(&Context<Msg>) -> N,
         N: IntoNode<Msg>,
     {
         let child = child_fn(&self.cx).into_node();
@@ -88,7 +89,7 @@ where
     ) -> Self
     where
         O: Observable,
-        N: IntoNode<Msg>,
+        N: IntoNode<Msg> + 'static,
     {
         let dyn_child = DynChild::new(&self.cx, observer, child_fn);
 
