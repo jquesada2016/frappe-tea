@@ -86,7 +86,7 @@ where
         self
     }
 
-    pub fn child_if<F, N>(self, child_fn: F, when: bool) -> Self
+    pub fn child_if<F, N>(self, when: bool, child_fn: F) -> Self
     where
         F: FnOnce(&Context<Msg>) -> N,
         N: IntoNode<Msg>,
@@ -118,9 +118,9 @@ where
 
     pub fn dyn_child_if<O, N>(
         self,
+        when: bool,
         observer: O,
         child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
-        when: bool,
     ) -> Self
     where
         O: Observable,
@@ -168,7 +168,7 @@ where
 
     pub fn class(mut self, name: impl ToString) -> Self {
         self.attributes
-            .entry(name.to_string())
+            .entry("class".to_string())
             .and_modify(|classes| {
                 write!(classes, " {}", name.to_string()).unwrap()
             })
