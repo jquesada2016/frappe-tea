@@ -5,6 +5,8 @@ use crate::{
 use paste::paste;
 use sealed::*;
 use std::{collections::HashMap, fmt, fmt::Write};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 mod sealed {
     pub trait Sealed {}
@@ -84,6 +86,18 @@ where
         self
     }
 
+    pub fn child_if<F, N>(self, child_fn: F, when: bool) -> Self
+    where
+        F: FnOnce(&Context<Msg>) -> N,
+        N: IntoNode<Msg>,
+    {
+        if when {
+            self.child(child_fn)
+        } else {
+            self
+        }
+    }
+
     pub fn dyn_child<O, N>(
         mut self,
         observer: O,
@@ -100,6 +114,23 @@ where
         self.children.push(dyn_child);
 
         self
+    }
+
+    pub fn dyn_child_if<O, N>(
+        self,
+        observer: O,
+        child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
+        when: bool,
+    ) -> Self
+    where
+        O: Observable,
+        N: IntoNode<Msg> + 'static,
+    {
+        if when {
+            self.dyn_child(observer, child_fn)
+        } else {
+            self
+        }
     }
 
     pub fn attr(mut self, name: impl ToString, value: impl ToString) -> Self {
@@ -157,7 +188,7 @@ where
     #[track_caller]
     pub fn on<F>(mut self, event: impl ToString, f: F) -> Self
     where
-        F: FnMut(&web_sys::Event) -> std::option::Option<Msg> + 'static,
+        F: FnMut(&web_sys::Event) -> Option<Msg> + 'static,
     {
         // Needing an event handler automatically makes this node dynamic, since
         // we need to be able to attach the event listener
@@ -206,6 +237,17 @@ where
 
         #[cfg(target_arch = "wasm32")]
         if let Some(node) = this.node.node() {
+            for (name, value) in &self.attributes {
+                node.unchecked_ref::<web_sys::Element>()
+                    .set_attribute(name, value)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to set attribute `{name}` \
+                            to the value `{value}`: {e:#?}"
+                        );
+                    });
+            }
+
             for (event, handlers) in self.event_listeners {
                 for (location, mut f) in handlers {
                     let handler = gloo::events::EventListener::new(
@@ -241,8 +283,12 @@ where
 
         match &mut this.node {
             NodeKind::Tag {
-                event_handlers: eh, ..
+                attributes,
+                event_handlers: eh,
+                ..
             } => {
+                *attributes = self.attributes;
+
                 *eh = event_handlers;
             }
             _ => unreachable!(),
