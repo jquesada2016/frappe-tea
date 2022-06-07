@@ -101,7 +101,7 @@ where
     pub fn dyn_child<O, N>(
         mut self,
         observer: O,
-        child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
+        child_fn: impl FnMut(&Context<Msg>, &O::Item) -> N + 'static,
     ) -> Self
     where
         O: Observable,
@@ -120,7 +120,7 @@ where
         self,
         when: bool,
         observer: O,
-        child_fn: impl FnMut(&Context<Msg>, O::Item) -> N + 'static,
+        child_fn: impl FnMut(&Context<Msg>, &O::Item) -> N + 'static,
     ) -> Self
     where
         O: Observable,

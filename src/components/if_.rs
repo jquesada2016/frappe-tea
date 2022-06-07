@@ -57,7 +57,7 @@ where
 
         self.state.observer.subscribe(Box::new(move |b| {
             if let Some(children) = children.upgrade() {
-                if b {
+                if *b {
                     children.clear();
 
                     let child = children_fn(&cx).into_node();
@@ -283,7 +283,7 @@ fn generate_if_blocks<Msg>(
                     last_block_rendered.borrow_mut();
 
                 // Update the state of this expr
-                exprs_borrow[i] = b;
+                exprs_borrow[i] = *b;
 
                 // Now, find the first expr that is true
                 if let Some((i, _)) =

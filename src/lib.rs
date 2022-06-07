@@ -1,4 +1,4 @@
-#![feature(once_cell)]
+#![feature(once_cell, cell_update)]
 
 #[macro_use]
 extern crate async_trait;

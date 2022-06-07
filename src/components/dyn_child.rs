@@ -11,7 +11,7 @@ pub struct DynChild<Msg, O, F> {
 impl<Msg, O, F, N> DynChild<Msg, O, F>
 where
     O: Observable,
-    F: FnMut(&Context<Msg>, O::Item) -> N + 'static,
+    F: FnMut(&Context<Msg>, &O::Item) -> N + 'static,
     N: IntoNode<Msg>,
 {
     pub fn new(cx: &Context<Msg>, bool_observer: O, child_fn: F) -> Self {
@@ -27,7 +27,7 @@ impl<Msg, O, F, N> IntoNode<Msg> for DynChild<Msg, O, F>
 where
     Msg: 'static,
     O: Observable,
-    F: FnMut(&Context<Msg>, O::Item) -> N + 'static,
+    F: FnMut(&Context<Msg>, &O::Item) -> N + 'static,
     N: IntoNode<Msg>,
 {
     fn into_node(self) -> NodeTree<Msg> {
