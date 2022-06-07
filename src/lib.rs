@@ -82,34 +82,24 @@ trait Runtime<Msg> {
 // =============================================================================
 
 /// Main entry point for isomorphic apps.
-pub struct AppElement<M, UF, Msg>(Arc<AppEl<M, UF, Msg>>);
+pub struct App<M, UF, Msg>(Arc<AppInner<M, UF, Msg>>);
 
-assert_impl_all!(AppElement<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
+assert_impl_all!(App<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
-impl<M, UF, Msg> fmt::Debug for AppElement<M, UF, Msg>
-where
-    M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
-    Msg: Send + 'static,
-{
+impl<M, UF, Msg> fmt::Debug for App<M, UF, Msg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.root.get().unwrap().fmt(f)
     }
 }
 
 /// Renders the state of the app into an HTML string.
-impl<M, UF, Msg> fmt::Display for AppElement<M, UF, Msg>
-where
-    M: Send + 'static,
-    UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
-    Msg: Send + 'static,
-{
+impl<M, UF, Msg> fmt::Display for App<M, UF, Msg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.root.get().unwrap().fmt(f)
     }
 }
 
-impl<M, UF, Msg> AppElement<M, UF, Msg>
+impl<M, UF, Msg> App<M, UF, Msg>
 where
     M: Send + 'static,
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
@@ -123,10 +113,10 @@ where
     ) -> Self
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, &Context<Msg>) -> N,
+        VF: FnOnce(&Context<Msg>, &M) -> N,
         N: IntoNode<Msg>,
     {
-        Self(AppEl::new(
+        Self(AppInner::new(
             #[cfg(target_arch = "wasm32")]
             target,
             initial_model,
@@ -136,8 +126,18 @@ where
     }
 }
 
-/// This struct exists solely to allow creating a shared reference to an [`AppElement`] instance.
-struct AppEl<M, UF, Msg> {
+impl<M> App<M, (), ()> {
+    pub fn template<MF, VF, N>(initial_model: MF, view_fn: VF) -> Self
+    where
+        M: 'static,
+        MF: FnOnce() -> M,
+        VF: FnOnce(&Context<()>, &M) -> N,
+        N: IntoNode<()> + 'static,
+    {
+        Self(Arc::new(AppInner::template(initial_model, view_fn)))
+    }
+}
+struct AppInner<M, UF, Msg> {
     model: Mutex<Option<M>>,
     update: UF,
     // We need to hold onto the root so it doesn't drop and undo all our hard work
@@ -148,12 +148,12 @@ struct AppEl<M, UF, Msg> {
     pending_cmds: atomic::AtomicUsize,
 }
 
-assert_impl_all!(AppEl<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
+assert_impl_all!(AppInner<(), fn(&mut ()) -> Option<DynCmd<()>>, ()>: Send);
 
 // Safety:
 // This is safe because access to the update fn is gated by a mutex lock
 // on model.
-unsafe impl<M, UF, Msg> Sync for AppEl<M, UF, Msg>
+unsafe impl<M, UF, Msg> Sync for AppInner<M, UF, Msg>
 where
     M: 'static,
     UF: Send + 'static,
@@ -161,7 +161,7 @@ where
 {
 }
 
-impl<M, UF, Msg> DispatchMsg<Msg> for AppEl<M, UF, Msg>
+impl<M, UF, Msg> DispatchMsg<Msg> for AppInner<M, UF, Msg>
 where
     M: Send + 'static,
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
@@ -173,7 +173,7 @@ where
 }
 
 #[async_trait]
-impl<M, UF, Msg> Runtime<Msg> for AppEl<M, UF, Msg>
+impl<M, UF, Msg> Runtime<Msg> for AppInner<M, UF, Msg>
 where
     M: Send + 'static,
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
@@ -212,7 +212,7 @@ where
     }
 }
 
-impl<M, UF, Msg> AppEl<M, UF, Msg>
+impl<M, UF, Msg> AppInner<M, UF, Msg>
 where
     M: Send + 'static,
     UF: Fn(&mut M, Msg) -> Option<DynCmd<Msg>> + Send + 'static,
@@ -226,7 +226,7 @@ where
     ) -> Arc<Self>
     where
         MF: FnOnce() -> (M, Option<DynCmd<Msg>>),
-        VF: FnOnce(&M, &Context<Msg>) -> N,
+        VF: FnOnce(&Context<Msg>, &M) -> N,
         N: IntoNode<Msg>,
     {
         let (model, cmd) = initial_model();
@@ -250,7 +250,7 @@ where
         cx.hydrating.store(true, atomic::Ordering::Relaxed);
 
         let child =
-            view(this.model.lock().unwrap().as_ref().unwrap(), &cx).into_node();
+            view(&cx, this.model.lock().unwrap().as_ref().unwrap()).into_node();
 
         #[cfg(feature = "ssr")]
         cx.hydrating.store(false, atomic::Ordering::Relaxed);
@@ -272,6 +272,32 @@ where
         this.root.set(root_node).unwrap();
 
         this
+    }
+}
+
+impl<M> AppInner<M, (), ()> {
+    fn template<MF, VF, N>(initial_model: MF, view_fn: VF) -> Self
+    where
+        M: 'static,
+        MF: FnOnce() -> M,
+        VF: FnOnce(&Context<()>, &M) -> N,
+        N: IntoNode<()> + 'static,
+    {
+        let model = initial_model();
+
+        let cx = Context {
+            template: Arc::new(AtomicBool::new(true)),
+            ..Default::default()
+        };
+
+        let root = view_fn(&cx, &model).into_node();
+
+        Self {
+            model: Mutex::new(Some(model)),
+            pending_cmds: Default::default(),
+            root: SyncOnceCell::from(root),
+            update: (),
+        }
     }
 }
 
@@ -439,6 +465,7 @@ impl<Msg> Children<Msg> {
 #[derive(Educe)]
 #[educe(Default, Clone, Debug)]
 pub struct Context<Msg> {
+    template: Arc<AtomicBool>,
     /// A structurally-stable unique [`Id`], which will always
     /// produce the same [`Id`] for the same node tree.
     id: Id,
@@ -462,10 +489,11 @@ impl<Msg> Context<Msg> {
         let mut this = Context {
             msg_dispatcher: parent_cx.msg_dispatcher.clone(),
             hydrating: parent_cx.hydrating.clone(),
+            template: parent_cx.template.clone(),
             ..Default::default()
         };
 
-        this.id.set_id(&parent_cx.id, index);
+        this.id.derive_id_from_parent(&parent_cx.id, index);
 
         this
     }
@@ -536,6 +564,7 @@ impl fmt::Display for Id {
         }
     }
 }
+
 impl PartialEq<(usize, usize, usize)> for Id {
     fn eq(&self, rhs: &(usize, usize, usize)) -> bool {
         self.sum() == rhs.0 && self.depth() == rhs.1 && self.index() == rhs.2
@@ -543,30 +572,43 @@ impl PartialEq<(usize, usize, usize)> for Id {
 }
 
 impl Id {
+    /// Gets the sum portion of the `id`, thix being the `x` in
+    /// x-?-?.
     fn sum(&self) -> usize {
         self.0
     }
 
+    /// Gets the depth portion of the `id`, thix being the `x` in
+    /// ?-x-?.
     fn depth(&self) -> usize {
         self.1
     }
 
+    /// Gets the index portion of the `id`, thix being the `x` in
+    /// ?-?-x.
     fn index(&self) -> usize {
         self.2
     }
 
+    /// Gets the custom ID. Returns `None` if one has not been set.
     fn custom_id(&self) -> Option<&str> {
         self.3.get().map(String::as_str)
     }
 
+    /// Sets the sum portion of the `id`, thix being the `x` in
+    /// x-?-?.
     fn set_sum(&mut self, sum: usize) {
         self.0 += sum;
     }
 
+    /// Sets the depth portion of the `id`, thix being the `x` in
+    /// ?-x-?.
     fn set_depth(&mut self, depth: usize) {
         self.1 += depth;
     }
 
+    /// Sets the index portion of the `id`, thix being the `x` in
+    /// ?-?-x.
     fn set_index(&mut self, index: usize) {
         self.2 += index;
     }
@@ -577,12 +619,17 @@ impl Id {
     /// This function will panic if `id` is an empty string.
     #[track_caller]
     fn set_custom_id(&self, custom_id: String) {
-        assert!(!custom_id.is_empty());
+        assert!(
+            !custom_id.is_empty(),
+            "`custom_id` cannot be an empty string"
+        );
 
         self.3.set(custom_id).expect("cannot set id more than once");
     }
 
-    fn set_id(&mut self, parent_id: &Id, index: usize) {
+    /// Creates the appropriate `id` from the given parent's `id` and
+    /// `index`.
+    fn derive_id_from_parent(&mut self, parent_id: &Id, index: usize) {
         self.set_sum(parent_id.0 + parent_id.1 + parent_id.2);
 
         self.set_depth(parent_id.1 + 1);
@@ -965,37 +1012,55 @@ impl<Msg> fmt::Debug for NodeTree<Msg> {
 }
 impl<Msg> fmt::Display for NodeTree<Msg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Every byte saved is a byte to live another day :)
+        let template = self.children.cx.template.load(atomic::Ordering::SeqCst);
 
         match &self.node {
-            NodeKind::Component { .. } => {
-                f.write_fmt(format_args!(
-                    r#"<template id="{}o"></template>"#,
-                    self.children.cx.id,
-                ))?;
+            NodeKind::Component { name, .. } => {
+                if template {
+                    f.write_fmt(format_args!("<!-- <{}> -->", name))?;
+                } else {
+                    f.write_fmt(format_args!(
+                        r#"<template id="{}o"></template>"#,
+                        self.children.cx.id,
+                    ))?;
+                }
 
                 for child in self.children.children.lock().unwrap().iter() {
                     child.fmt(f)?
                 }
 
-                f.write_fmt(format_args!(
-                    r#"<template id="{}c"></template>"#,
-                    self.children.cx.id,
-                ))
+                if template {
+                    f.write_fmt(format_args!("<!-- </{}> -->", name))
+                } else {
+                    f.write_fmt(format_args!(
+                        r#"<template id="{}c"></template>"#,
+                        self.children.cx.id,
+                    ))
+                }
             }
             NodeKind::Tag {
                 name, attributes, ..
             } => {
                 if attributes.is_empty() {
-                    f.write_fmt(format_args!(
-                        r#"<{name} id="{}">"#,
-                        self.children.cx.id
-                    ))?;
+                    f.write_fmt(format_args!("<{name}"))?;
+
+                    if template && self.children.cx.id.custom_id().is_none() {
+                        f.write_str(">")?;
+                    } else {
+                        f.write_fmt(format_args!(
+                            r#" id="{}">"#,
+                            self.children.cx.id
+                        ))?;
+                    }
                 } else {
-                    f.write_fmt(format_args!(
-                        r#"<{name} id="{}" "#,
-                        self.children.cx.id
-                    ))?;
+                    f.write_fmt(format_args!(r#"<{name} "#,))?;
+
+                    if !template || self.children.cx.id.custom_id().is_some() {
+                        f.write_fmt(format_args!(
+                            r#"id="{}" "#,
+                            self.children.cx.id
+                        ))?;
+                    }
 
                     for (i, (name, val)) in attributes.iter().enumerate() {
                         f.write_fmt(format_args!(r#"{name}="{val}""#))?;

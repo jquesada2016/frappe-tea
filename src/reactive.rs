@@ -1,6 +1,7 @@
 use std::{
     cell::{RefCell, UnsafeCell},
-    fmt, ops,
+    fmt,
+    ops::{self},
     rc::Rc,
     sync::{Arc, Weak},
 };
@@ -142,6 +143,7 @@ where
 pub struct Ref<T>(Weak<UnsafeCell<SharedState<T>>>);
 
 assert_not_impl_any!(Ref<()>: Clone);
+// assert_impl_all!(Ref<Vec<()>>: IntoIterator);
 
 impl<T> ops::Deref for Ref<T> {
     type Target = T;
