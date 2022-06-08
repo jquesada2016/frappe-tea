@@ -133,6 +133,32 @@ where
         }
     }
 
+    pub fn child_iter<I, F, N>(mut self, iter: I, mut each_fn: F) -> Self
+    where
+        I: IntoIterator,
+        F: FnMut(&Context<Msg>, I::Item) -> N,
+        N: IntoNode<Msg> + 'static,
+    {
+        for item in iter {
+            self = self.child(|cx| each_fn(cx, item));
+        }
+
+        self
+    }
+
+    pub fn child_iter_if<I, F, N>(self, when: bool, iter: I, each_fn: F) -> Self
+    where
+        I: IntoIterator,
+        F: FnMut(&Context<Msg>, I::Item) -> N,
+        N: IntoNode<Msg> + 'static,
+    {
+        if when {
+            self.child_iter(iter, each_fn)
+        } else {
+            self
+        }
+    }
+
     pub fn attr(mut self, name: impl ToString, value: impl ToString) -> Self {
         self.attributes.insert(name.to_string(), value.to_string());
 
