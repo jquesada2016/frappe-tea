@@ -14,8 +14,8 @@ pub trait Observable {
     ) -> Option<Unsub<Self::Item>>;
 }
 
-#[derive(Default, Educe)]
-#[educe(Clone)]
+#[derive(Educe)]
+#[educe(Clone, Default(bound))]
 pub struct Source<T>(Arc<SourceInner<T>>);
 
 assert_impl_all!(Source<()>: Send, Sync);
@@ -52,6 +52,11 @@ impl<T> Source<T> {
 
         // Give the value back before anyone notices
         self.0.value.set(Some(v));
+        self.0.observers.set(Some(observers));
+    }
+
+    pub fn new(value: T) -> Self {
+        Self::from(value)
     }
 
     pub fn set(&self, value: T) {
@@ -71,13 +76,26 @@ impl<T> Source<T> {
 
         ret
     }
+
+    pub fn observer(&self) -> Observer<T> {
+        let id = self.0.next_id.update(|c| c + 1);
+
+        Observer {
+            source: Arc::downgrade(&self.0),
+            id,
+        }
+    }
 }
 
-#[derive(Default)]
+#[derive(Educe)]
+#[educe(Default(bound))]
 struct SourceInner<T> {
+    #[educe(Default(expression = "Cell::new(Some(T::default()))"))]
     value: Cell<Option<T>>,
+    #[educe(Default(expression = "Cell::new(Some(Default::default()))"))]
     #[allow(clippy::type_complexity)]
     observers: Cell<Option<HashMap<usize, Box<dyn FnMut(&T)>>>>,
+    #[educe(Default(expression = "Cell::new(0)"))]
     next_id: Cell<usize>,
 }
 
@@ -90,8 +108,8 @@ impl<T> From<T> for SourceInner<T> {
     fn from(value: T) -> Self {
         Self {
             value: Cell::new(Some(value)),
-            observers: Cell::default(),
-            next_id: Cell::default(),
+            observers: Cell::new(Some(HashMap::default())),
+            next_id: Cell::new(0),
         }
     }
 }
@@ -126,14 +144,14 @@ impl<T> Observable for Observer<T> {
         mut callback: Box<dyn FnMut(&Self::Item)>,
     ) -> Option<Unsub<Self::Item>> {
         if let Some(source) = self.source.upgrade() {
+            let v = source.value.take().unwrap();
+            let mut observers = source.observers.take().unwrap();
+
             // First of all, we need to pass the current value to
             // the callback
-            let v = source.value.take().unwrap();
-
             callback(&v);
 
             // After this, we just need to save the callback
-            let mut observers = source.observers.take().unwrap();
             observers.insert(self.id, callback);
 
             // Give everything we borrowed back

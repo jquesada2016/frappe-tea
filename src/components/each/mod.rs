@@ -6,11 +6,6 @@ pub struct Each<Kind, Msg> {
     kind: Kind,
 }
 
-pub struct Iter<O, F> {
-    observer: O,
-    each_fn: F,
-}
-
 impl<Msg> Each<(), Msg> {
     pub fn iter<I, N, F, O>(
         cx: &Context<Msg>,
@@ -31,6 +26,11 @@ impl<Msg> Each<(), Msg> {
             },
         }
     }
+}
+
+pub struct Iter<O, F> {
+    observer: O,
+    each_fn: F,
 }
 
 impl<Msg, I, N, F, O> IntoNode<Msg> for Each<Iter<O, F>, Msg>
