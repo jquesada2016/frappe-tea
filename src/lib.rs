@@ -23,6 +23,7 @@ pub mod testing;
 #[cfg(target_arch = "wasm32")]
 use std::ops::Deref;
 use std::{
+    any::Any,
     collections::HashMap,
     fmt,
     lazy::SyncOnceCell,
@@ -479,6 +480,8 @@ pub struct Context<Msg> {
     msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
     /// This is used to aid in generating unique [`Id`]'s.
     next_index: Arc<AtomicUsize>,
+    /// Storage of arbitrary local component state
+    local_state: Arc<Mutex<Option<Box<dyn Any + Send>>>>,
 }
 
 impl<Msg> Context<Msg> {
@@ -1012,7 +1015,8 @@ impl<Msg> fmt::Debug for NodeTree<Msg> {
 }
 impl<Msg> fmt::Display for NodeTree<Msg> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let template = self.children.cx.template.load(atomic::Ordering::SeqCst);
+        let template =
+            self.children.cx.template.load(atomic::Ordering::Relaxed);
 
         match &self.node {
             NodeKind::Component { name, .. } => {

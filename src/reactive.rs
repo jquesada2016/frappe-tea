@@ -59,13 +59,13 @@ impl<T> Source<T> {
         Self::from(value)
     }
 
-    pub fn set(&self, value: T) {
+    pub fn set(&mut self, value: T) {
         self.0.value.set(Some(value));
 
         self.notify();
     }
 
-    pub fn set_with<U>(&self, f: impl FnOnce(&mut T) -> U) -> U {
+    pub fn set_with<U>(&mut self, f: impl FnOnce(&mut T) -> U) -> U {
         let mut value = self.0.value.take().unwrap();
 
         let ret = f(&mut value);
