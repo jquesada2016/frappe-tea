@@ -39,24 +39,29 @@ where
 #[derive(Educe)]
 #[allow(clippy::type_complexity)]
 #[educe(Clone)]
-pub struct MsgDispatcher<Msg>(Rc<RefCell<Box<dyn FnMut(Msg)>>>);
+pub struct MsgDispatcher<Msg, LocalMsg>(
+    Rc<RefCell<Box<dyn FnMut(LocalMsg)>>>,
+    Context<Msg>,
+);
 
-impl<Msg> MsgDispatcher<Msg> {
-    pub fn dispatch_msg(&self, msg: Msg) {
+impl<Msg, LocalMsg> MsgDispatcher<Msg, LocalMsg> {
+    pub fn dispatch_msg(&self, msg: LocalMsg) {
         self.0.borrow_mut()(msg)
     }
 }
 
-pub fn create_local_state<Msg, M, MF, UF>(
+pub fn create_local_state<Msg, LocalMsg, M, MF, UF>(
     cx: &Context<Msg>,
     initial_model: MF,
     mut update_fn: UF,
-) -> (Observer<M>, MsgDispatcher<Msg>)
+) -> (Observer<M>, MsgDispatcher<Msg, LocalMsg>)
 where
     M: Send + 'static,
     MF: FnOnce() -> M,
-    UF: FnMut(&mut M, Msg) + 'static,
+    UF: FnMut(&mut M, LocalMsg) + 'static,
 {
+    let cx = Context::from_parent_cx(cx);
+
     let state = cx.local_state.clone();
     let mut lock = state.lock().unwrap();
 
@@ -71,16 +76,22 @@ where
 
     (
         observer,
-        MsgDispatcher(Rc::new(RefCell::new(Box::new(move |msg| {
-            if let Some(state) = state_weak.upgrade() {
-                let mut lock = state.lock().unwrap();
+        MsgDispatcher(
+            Rc::new(RefCell::new(Box::new(move |msg| {
+                if let Some(state) = state_weak.upgrade() {
+                    let mut lock = state.lock().unwrap();
 
-                let model =
-                    lock.as_mut().unwrap().downcast_mut::<Source<M>>().unwrap();
+                    let model = lock
+                        .as_mut()
+                        .unwrap()
+                        .downcast_mut::<Source<M>>()
+                        .unwrap();
 
-                model.set_with(|m| update_fn(m, msg));
-            }
-        })))),
+                    model.set_with(|m| update_fn(m, msg));
+                }
+            }))),
+            cx,
+        ),
     )
 }
 
