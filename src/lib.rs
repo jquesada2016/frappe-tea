@@ -26,10 +26,9 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt,
-    lazy::SyncOnceCell,
     sync::{
         atomic::{self, AtomicBool, AtomicUsize},
-        Arc, Mutex, Weak,
+        Arc, Mutex, OnceLock, Weak,
     },
 };
 use utils::{is_browser, spawn};
@@ -143,7 +142,7 @@ struct AppInner<M, UF, Msg> {
     update: UF,
     // We need to hold onto the root so it doesn't drop and undo all our hard work
     #[cfg_attr(not(target_arch = "wasm32"), allow(unused))]
-    root: SyncOnceCell<NodeTree<Msg>>,
+    root: OnceLock<NodeTree<Msg>>,
     /// Counter designed to keep tabs on pending commands preventing us from rendering
     /// to a string.
     pending_cmds: atomic::AtomicUsize,
@@ -235,7 +234,7 @@ where
         let this = Arc::new(Self {
             model: Mutex::new(Some(model)),
             update,
-            root: SyncOnceCell::new(),
+            root: OnceLock::new(),
             pending_cmds: atomic::AtomicUsize::new(0),
         });
 
@@ -243,7 +242,7 @@ where
             Arc::downgrade(&this) as Weak<dyn DispatchMsg<Msg> + Send + Sync>;
 
         let cx = Context {
-            msg_dispatcher: SyncOnceCell::from(msg_dispatcher_weak),
+            msg_dispatcher: OnceLock::from(msg_dispatcher_weak),
             ..Default::default()
         };
 
@@ -296,7 +295,7 @@ impl<M> AppInner<M, (), ()> {
         Self {
             model: Mutex::new(Some(model)),
             pending_cmds: Default::default(),
-            root: SyncOnceCell::from(root),
+            root: OnceLock::from(root),
             update: (),
         }
     }
@@ -391,6 +390,7 @@ impl<Msg> Children<Msg> {
                     )
                     .expect(FAILED_APPEND);
 
+                    #[allow(clippy::significant_drop_in_scrutinee)]
                     for child in child.children.children.lock().unwrap().iter()
                     {
                         Self::recurseively_append_component_children(
@@ -420,6 +420,7 @@ impl<Msg> Children<Msg> {
                         )
                         .expect(FAILED_APPEND);
 
+                    #[allow(clippy::significant_drop_in_scrutinee)]
                     for child in child.children.children.lock().unwrap().iter()
                     {
                         Self::recurseively_append_component_children(
@@ -477,7 +478,7 @@ pub struct Context<Msg> {
     hydrating: Arc<AtomicBool>,
     /// Message dispatcher.
     #[educe(Debug(ignore))]
-    msg_dispatcher: SyncOnceCell<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
+    msg_dispatcher: OnceLock<Weak<dyn DispatchMsg<Msg> + Send + Sync>>,
     /// This is used to aid in generating unique [`Id`]'s.
     next_index: Arc<AtomicUsize>,
     /// Storage of arbitrary local component state
@@ -551,7 +552,7 @@ impl Clone for EventHandler {
 /// - 2: index of child with respect to parent
 /// - 3: custom HTML `id` attribute
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Id(usize, usize, usize, SyncOnceCell<String>);
+struct Id(usize, usize, usize, OnceLock<String>);
 
 impl fmt::Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1029,6 +1030,7 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
                     ))?;
                 }
 
+                #[allow(clippy::significant_drop_in_scrutinee)]
                 for child in self.children.children.lock().unwrap().iter() {
                     child.fmt(f)?
                 }
@@ -1077,6 +1079,7 @@ impl<Msg> fmt::Display for NodeTree<Msg> {
                     f.write_str(">")?;
                 }
 
+                #[allow(clippy::significant_drop_in_scrutinee)]
                 for child in self.children.children.lock().unwrap().iter() {
                     child.fmt(f)?;
                 }
