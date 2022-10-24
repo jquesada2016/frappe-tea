@@ -7,6 +7,10 @@ use std::collections::{HashMap, HashSet};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 use wasm_bindgen::JsValue;
 
+type ChildrenFn<Msg> = Box<dyn FnOnce(Ctx<Msg>) -> View<Msg>>;
+type EventListener<Msg> =
+  (String, Box<dyn FnMut(&web_sys::Event) -> Option<Msg>>);
+
 pub trait HtmlElementMetadata {
   /// The name of the element, such as `a`, `p`, `div`, etc.
   fn name(&self) -> String;
@@ -25,9 +29,8 @@ pub struct HtmlElement<El, Msg = ()> {
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
   props: HashMap<String, JsValue>,
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  event_listeners:
-    Vec<(String, Box<dyn FnMut(&web_sys::Event) -> Option<Msg>>)>,
-  children: Vec<Box<dyn FnOnce(Ctx<Msg>) -> View<Msg>>>,
+  event_listeners: Vec<EventListener<Msg>>,
+  children: Vec<ChildrenFn<Msg>>,
 }
 
 impl<El: HtmlElementMetadata, Msg: 'static> IntoView<Msg>
@@ -87,6 +90,7 @@ impl<El: HtmlElementMetadata, Msg: 'static> IntoView<Msg>
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     let parent_node = kind.get_node();
 
+    #[allow(clippy::map_identity)]
     let children = children
       .into_iter()
       .map(|f| f(cx.clone()))

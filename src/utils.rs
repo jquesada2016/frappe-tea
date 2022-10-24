@@ -6,6 +6,7 @@ macro_rules! api_planning {
   ($($tt:tt)*) => {};
 }
 
+#[allow(unused_macros)]
 macro_rules! trace {
   ($($tt:tt)*) => {
     #[cfg(debug_assertions)]

@@ -5,6 +5,7 @@ extern crate clone_macro;
 
 #[macro_use]
 mod utils;
+mod components;
 mod html;
 mod runtime;
 mod view;

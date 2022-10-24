@@ -1,5 +1,5 @@
 use crate::runtime::Ctx;
-use error_stack::{report, Context, Result};
+use error_stack::{report, Context};
 use std::{collections::HashMap, fmt, ops::Deref};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 use wasm_bindgen::{JsCast, JsValue};
@@ -8,8 +8,9 @@ pub trait IntoView<Msg> {
   fn into_view(self) -> View<Msg>;
 }
 
-#[derive(Debug, derive_more::Display)]
-pub enum Error {
+#[derive(Clone, Copy, Debug, derive_more::Display)]
+enum Error {
+  #[display(fmt = "element name is invalid")]
   InvalidElementName,
 }
 
@@ -55,8 +56,8 @@ pub(crate) enum ViewKind<Msg> {
   Html(Html<Msg>),
   VoidHtml(VoidHtml),
   Text(Text),
-  Comment(Comment),
-  Component(Component<Msg>),
+  _Comment(Comment),
+  _Component(Component<Msg>),
 }
 
 impl<Msg> ViewKind<Msg> {
@@ -92,8 +93,8 @@ impl<Msg> ViewKind<Msg> {
     Self::Text(Text::new(text))
   }
 
-  pub fn new_comment(content: &str) -> Self {
-    Self::Comment(Comment::new(content))
+  pub fn _new_comment(content: &str) -> Self {
+    Self::_Comment(Comment::_new(content))
   }
 
   /// Gets the backing [`Node`].
@@ -105,8 +106,8 @@ impl<Msg> ViewKind<Msg> {
       Self::Html(Html { node, .. }) => node.clone(),
       Self::VoidHtml(VoidHtml { node, .. }) => node.clone(),
       Self::Text(Text { node, .. }) => node.clone(),
-      Self::Comment(Comment { node, .. }) => node.clone(),
-      Self::Component(Component { fragment, .. }) => fragment.clone().into(),
+      Self::_Comment(Comment { node, .. }) => node.clone(),
+      Self::_Component(Component { fragment, .. }) => fragment.clone().into(),
     }
   }
 
@@ -115,7 +116,9 @@ impl<Msg> ViewKind<Msg> {
   pub fn set_children(&mut self, new_children: Vec<View<Msg>>) {
     match self {
       Self::Html(Html { children, .. })
-      | Self::Component(Component { children, .. }) => *children = new_children,
+      | Self::_Component(Component { children, .. }) => {
+        *children = new_children
+      }
       _ => {}
     }
   }
@@ -173,7 +176,7 @@ impl<Msg> Drop for ViewKind<Msg> {
       Self::VoidHtml(VoidHtml { node, .. }) => {
         node.unchecked_ref::<web_sys::Element>().remove();
       }
-      Self::Comment(Comment { node, .. }) => {
+      Self::_Comment(Comment { node, .. }) => {
         node.unchecked_ref::<web_sys::Element>().remove();
       }
       Self::Text(Text { node, .. }) => {
@@ -181,7 +184,7 @@ impl<Msg> Drop for ViewKind<Msg> {
       }
       // No need to remove it from the DOM, as this will happen automatically
       // when its' containing `Comment`s are dropped
-      Self::Component(_) => {}
+      Self::_Component(_) => {}
     }
   }
 }
@@ -199,7 +202,7 @@ pub(crate) struct Html<Msg> {
   attributes: HashMap<String, String>,
   /// List of props, such as `value` and `checked`.
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  props: HashMap<String, JsValue>,
+  _props: HashMap<String, JsValue>,
   /// List of event listeners.
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
   event_listeners: Vec<gloo::events::EventListener>,
@@ -264,7 +267,7 @@ impl<Msg> Html<Msg> {
       node,
       attributes: Default::default(),
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
-      props,
+      _props: props,
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
       event_listeners: Default::default(),
       children: Default::default(),
@@ -284,7 +287,7 @@ pub(crate) struct VoidHtml {
   attributes: HashMap<String, String>,
   /// List of props, such as `value` and `checked`.
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  props: HashMap<String, JsValue>,
+  _props: HashMap<String, JsValue>,
   /// List of event listeners.
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
   event_listeners: Vec<gloo::events::EventListener>,
@@ -301,7 +304,7 @@ impl fmt::Display for VoidHtml {
 
       if !attributes.is_empty() {
         for (key, value) in attributes {
-          f.write_fmt(format_args!(r#" {name}="{value}""#))?;
+          f.write_fmt(format_args!(r#" {key}="{value}""#))?;
         }
       }
 
@@ -336,7 +339,7 @@ impl VoidHtml {
       node,
       attributes: Default::default(),
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
-      props,
+      _props: props,
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
       event_listeners: Default::default(),
     }
@@ -385,7 +388,7 @@ pub(crate) struct Comment {
 }
 
 impl Comment {
-  pub fn new(content: &str) -> Self {
+  pub fn _new(content: &str) -> Self {
     #[cfg(debug_assertions)]
     assert!(
       !content.contains("-->",),
@@ -409,7 +412,7 @@ impl Comment {
 /// Represents a custom component.
 pub(crate) struct Component<Msg> {
   /// The name of the component.
-  name: String,
+  _name: String,
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
   fragment: web_sys::DocumentFragment,
   /// The opening component delimeter.
@@ -451,14 +454,14 @@ impl<Msg> fmt::Display for Component<Msg> {
 }
 
 impl<Msg> Component<Msg> {
-  pub fn new(name: &str) -> Self {
+  pub fn _new(name: &str) -> Self {
     Self {
-      name: name.to_owned(),
+      _name: name.to_owned(),
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
       fragment: gloo::utils::document().create_document_fragment(),
-      opening: Comment::new(&format!("<{name}>")),
+      opening: Comment::_new(&format!("<{name}>")),
       children: Default::default(),
-      closing: Comment::new(&format!("</{name}>")),
+      closing: Comment::_new(&format!("</{name}>")),
     }
   }
 }
@@ -475,16 +478,13 @@ fn assert_tag_name_is_valid(name: &str) {
     "tag names must not contain ASCII upercase letters"
   );
   assert!(
-    name.split_whitespace().collect::<Vec<_>>().len() == 1,
+    name.split_whitespace().count() == 1,
     "whitespace is not allowed in tag names"
   );
   assert!(
     name.chars().all(|c| {
       if c.is_ascii() {
-        match c {
-          'a'..='z' | '0'..='9' => true,
-          _ => false,
-        }
+        matches!(c, 'a'..='z' | '0'..='9')
       } else {
         true
       }

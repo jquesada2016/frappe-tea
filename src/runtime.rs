@@ -1,4 +1,3 @@
-use core::marker::PhantomData;
 use futures::{
   channel::mpsc::{UnboundedReceiver, UnboundedSender},
   stream::StreamExt,
@@ -7,7 +6,6 @@ use std::{
   any::{self, Any, TypeId},
   cell::RefCell,
   collections::HashMap,
-  ops::Deref,
   pin::Pin,
   rc::Rc,
 };
@@ -137,6 +135,7 @@ impl<M: DiffableModel, Msg, UF> Runtime<M, Msg, UF>
 where
   UF: FnMut(M, Msg) -> M,
 {
+  #[cfg(all(target_arch = "wasm32", feature = "web"))]
   pub async fn run(&mut self) -> ! {
     #[cfg(debug_assertions)]
     assert!(self.model.is_some());
