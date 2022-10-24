@@ -1,2 +1,5 @@
+version = "Two"
 max_width = 80
-imports_granularity = "crate"
+format_strings = true
+tab_spaces = 2
+imports_granularity = "Crate"
