@@ -297,6 +297,7 @@ dependencies = [
 name = "frappe-tea"
 version = "0.1.0"
 dependencies = [
+ "cfg-if",
  "clone-macro",
  "criterion",
  "derive-getters",
@@ -307,6 +308,7 @@ dependencies = [
  "gloo",
  "js-sys",
  "static_assertions",
+ "tokio",
  "tracing",
  "typed-builder",
  "wasm-bindgen",
@@ -998,6 +1000,16 @@ checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tokio"
+version = "1.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9e03c497dc955702ba729190dc4aac6f2a0ce97f913e5b1b5912fc5039d9099"
+dependencies = [
+ "autocfg",
+ "pin-project-lite",
 ]
 
 [[package]]

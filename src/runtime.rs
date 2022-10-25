@@ -103,6 +103,8 @@ impl<Msg> Ctx<Msg> {
   }
 }
 
+#[derive(Debug, educe::Educe)]
+#[educe(Clone(bound))]
 pub enum ContextError<T = ()> {
   AlreadySet {
     /// The data that was attempted to be set.

@@ -1,6 +1,6 @@
 use crate::runtime::Ctx;
 use error_stack::{report, Context};
-use std::{collections::HashMap, fmt, ops::Deref};
+use std::{cell::RefCell, collections::HashMap, fmt, ops::Deref, rc::Rc};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -33,21 +33,6 @@ pub(crate) struct ViewInner<Msg> {
   pub cx: Ctx<Msg>,
   /// The kind of [`View`].
   pub kind: ViewKind<Msg>,
-  /// The parent [`Node`].
-  ///
-  /// [Node]: web_sys::Node
-  #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  pub parent: Option<web_sys::Node>,
-  /// The previous sibling [`Node`].
-  ///
-  /// This is useful for quickly inserting sibling
-  /// nodes without needing to query the DOM or use any
-  /// DOM specific API's for insertions. Insertion from
-  /// our point of view is always O(1).
-  ///
-  /// [Node]: web_sys::Node
-  #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  pub prev_sibling: Option<web_sys::Node>,
 }
 
 /// The kind of [`View`].
@@ -56,8 +41,8 @@ pub(crate) enum ViewKind<Msg> {
   Html(Html<Msg>),
   VoidHtml(VoidHtml),
   Text(Text),
-  _Comment(Comment),
-  _Component(Component<Msg>),
+  Comment(Comment),
+  Component(Component<Msg>),
 }
 
 impl<Msg> ViewKind<Msg> {
@@ -93,8 +78,12 @@ impl<Msg> ViewKind<Msg> {
     Self::Text(Text::new(text))
   }
 
-  pub fn _new_comment(content: &str) -> Self {
-    Self::_Comment(Comment::_new(content))
+  pub fn new_comment(content: &str) -> Self {
+    Self::Comment(Comment::new(content))
+  }
+
+  pub fn new_component(name: &str) -> Self {
+    Self::Component(Component::new(name))
   }
 
   /// Gets the backing [`Node`].
@@ -106,20 +95,16 @@ impl<Msg> ViewKind<Msg> {
       Self::Html(Html { node, .. }) => node.clone(),
       Self::VoidHtml(VoidHtml { node, .. }) => node.clone(),
       Self::Text(Text { node, .. }) => node.clone(),
-      Self::_Comment(Comment { node, .. }) => node.clone(),
-      Self::_Component(Component { fragment, .. }) => fragment.clone().into(),
+      Self::Comment(Comment { node, .. }) => node.clone(),
+      Self::Component(Component { fragment, .. }) => fragment.clone().into(),
     }
   }
 
   /// Sets the children for [`Html`] and [`Component`] views,
   /// does nothing on others.
   pub fn set_children(&mut self, new_children: Vec<View<Msg>>) {
-    match self {
-      Self::Html(Html { children, .. })
-      | Self::_Component(Component { children, .. }) => {
-        *children = new_children
-      }
-      _ => {}
+    if let Self::Html(Html { children, .. }) = self {
+      *children = new_children;
     }
   }
 
@@ -170,21 +155,14 @@ impl<Msg> ViewKind<Msg> {
 impl<Msg> Drop for ViewKind<Msg> {
   fn drop(&mut self) {
     match self {
-      Self::Html(Html { node, .. }) => {
-        node.unchecked_ref::<web_sys::Element>().remove();
-      }
-      Self::VoidHtml(VoidHtml { node, .. }) => {
-        node.unchecked_ref::<web_sys::Element>().remove();
-      }
-      Self::_Comment(Comment { node, .. }) => {
-        node.unchecked_ref::<web_sys::Element>().remove();
-      }
-      Self::Text(Text { node, .. }) => {
+      Self::Html(Html { node, .. })
+      | Self::VoidHtml(VoidHtml { node, .. })
+      | Self::Text(Text { node, .. }) => {
         node.unchecked_ref::<web_sys::Element>().remove();
       }
       // No need to remove it from the DOM, as this will happen automatically
       // when its' containing `Comment`s are dropped
-      Self::_Component(_) => {}
+      Self::Component(_) | Self::Comment(Comment { .. }) => {}
     }
   }
 }
@@ -384,11 +362,18 @@ pub(crate) struct Comment {
   ///
   /// [Node]: web_sys::Node
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
-  node: web_sys::Node,
+  pub node: web_sys::Node,
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl Drop for Comment {
+  fn drop(&mut self) {
+    self.node.unchecked_ref::<web_sys::Element>().remove();
+  }
 }
 
 impl Comment {
-  pub fn _new(content: &str) -> Self {
+  pub fn new(content: &str) -> Self {
     #[cfg(debug_assertions)]
     assert!(
       !content.contains("-->",),
@@ -398,7 +383,7 @@ impl Comment {
 
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     let node = gloo::utils::document()
-      .create_comment(content)
+      .create_comment(&format!(" {content} "))
       .unchecked_into::<web_sys::Node>();
 
     Self {
@@ -412,7 +397,7 @@ impl Comment {
 /// Represents a custom component.
 pub(crate) struct Component<Msg> {
   /// The name of the component.
-  _name: String,
+  name: String,
   #[cfg(all(target_arch = "wasm32", feature = "web"))]
   fragment: web_sys::DocumentFragment,
   /// The opening component delimeter.
@@ -422,8 +407,8 @@ pub(crate) struct Component<Msg> {
   /// <!-- <ComponentName> --> <-- this is the opening comment
   /// /* children */
   /// <!-- </ComponentName> -->
-  opening: Comment,
-  children: Vec<View<Msg>>,
+  pub opening: Comment,
+  pub children: Rc<RefCell<Vec<View<Msg>>>>,
   /// The closing component delimiter.
   ///
   /// This is used to quickly find the boundary of the component
@@ -445,7 +430,7 @@ impl<Msg> fmt::Display for Component<Msg> {
 
     opening.fmt(f)?;
 
-    for child in children.deref() {
+    for child in children.borrow().deref() {
       child.fmt(f)?;
     }
 
@@ -454,14 +439,26 @@ impl<Msg> fmt::Display for Component<Msg> {
 }
 
 impl<Msg> Component<Msg> {
-  pub fn _new(name: &str) -> Self {
+  pub fn new(name: &str) -> Self {
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    let fragment = gloo::utils::document().create_document_fragment();
+
+    let opening = Comment::new(&format!("<{name}>"));
+    let closing = Comment::new(&format!("</{name}>"));
+
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    {
+      fragment.append_child(&opening.node).unwrap();
+      fragment.append_child(&closing.node).unwrap();
+    }
+
     Self {
-      _name: name.to_owned(),
+      name: name.to_owned(),
       #[cfg(all(target_arch = "wasm32", feature = "web"))]
-      fragment: gloo::utils::document().create_document_fragment(),
-      opening: Comment::_new(&format!("<{name}>")),
+      fragment,
+      opening,
       children: Default::default(),
-      closing: Comment::_new(&format!("</{name}>")),
+      closing,
     }
   }
 }

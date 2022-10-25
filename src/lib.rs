@@ -1,4 +1,4 @@
-#![feature(iter_intersperse, min_specialization)]
+#![feature(iter_intersperse)]
 
 #[macro_use]
 extern crate clone_macro;
@@ -14,9 +14,10 @@ pub mod prelude {
   use super::*;
 
   pub use super::App;
+  pub use components::*;
   pub use html::*;
-  pub use runtime::Ctx;
-  pub use view::View;
+  pub use runtime::{Ctx, DiffableModel};
+  pub use view::{IntoView, View};
 }
 
 use runtime::DiffableModel;
@@ -37,7 +38,8 @@ where
     init_model: impl FnOnce() -> M,
     update_fn: UF,
     view_fn: impl FnOnce(&M::ViewModel, runtime::Ctx<Msg>) -> V,
-  ) -> Self {
+  ) -> Self
+where {
     let (tx, rx) = futures::channel::mpsc::unbounded();
 
     let model = init_model();

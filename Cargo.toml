@@ -6,19 +6,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["web", "ssr", "hydrate", "hot-reload"]
+default = ["web", "ssr", "hydrate", "hot-reload", "time-travel"]
 web = [
     "gloo",
     "js-sys",
     "wasm-bindgen",
     "wasm-bindgen-futures",
 ]
-ssr = []
+ssr = ["tokio"]
 hydrate = []
 hot-reload = []
 time-travel = []
 
 [dependencies]
+cfg-if = "1"
 clone-macro = "0.1"
 derive-getters = "0.2"
 derive_more = "0.99"
@@ -28,6 +29,7 @@ futures = "0.3"
 gloo = { version = "0.8", optional = true }
 js-sys = { version = "0.3", optional = true }
 static_assertions = "1"
+tokio = { version = "1", optional = true, features = ["rt"] }
 tracing = "0.1"
 typed-builder = "0.10"
 wasm-bindgen = { version = "0.2", optional = true }
